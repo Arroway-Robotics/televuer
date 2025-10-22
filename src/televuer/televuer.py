@@ -490,6 +490,7 @@ class TeleVuer:
         with self.right_squeeze_value_shared.get_lock():
             return self.right_squeeze_value_shared.value
 
+
     @property
     def right_controller_thumbstick_state(self):
         """bool, whether right thumbstick is touched or clicked."""
