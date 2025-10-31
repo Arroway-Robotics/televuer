@@ -314,19 +314,108 @@ class TeleVuer:
                 )
             )
     
-        session.upsert(
-            WebRTCVideoPlane(
-            # WebRTCStereoVideoPlane(
-                src="https://10.0.7.49:8080/offer",
-                iceServer={},
-                key="webrtc",
-                aspect=1.778,
-                height = 7,
-            ),
-            to="bgChildren",
-        )
-        while True:
-            await asyncio.sleep(1)
+
+
+        # Create an OpenCV window and display a blank image
+        # height, width = 720, 1280  # Adjust the size as needed
+        # img = np.zeros((height, width, 3), dtype=np.uint8)
+        # cv2.imshow('Video', img)
+        # cv2.waitKey(1)  # Ensure the window is created
+
+        import asyncio
+        import logging
+        import threading
+        import time
+        from queue import Queue
+        from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
+        from aiortc import MediaStreamTrack
+        from collections import deque
+
+        frame_queue = Queue()
+        # frame_queue = deque(maxlen=1) 
+
+        # Choose a connection method (uncomment the correct one)
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.123.161")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="10.1.10.48")
+
+        # Async function to receive video frames and put them in the queue
+        async def recv_camera_stream(track: MediaStreamTrack):
+            while True:
+                
+                frame = await track.recv()
+                print("recieved frame")
+                # Convert the frame to a NumPy array
+                img = frame.to_ndarray(format="rgb24")
+                frame_queue.put(frame)
+                # frame_queue.append(frame)
+
+        def run_asyncio_loop(loop):
+            asyncio.set_event_loop(loop)
+            async def setup():
+                try:
+                    # Connect to the device
+                    await conn.connect()
+
+                    # Switch video channel on and start receiving video frames
+                    conn.video.switchVideoChannel(True)
+
+                    # Add callback to handle received video frames
+                    conn.video.add_track_callback(recv_camera_stream)
+                except Exception as e:
+                    logging.error(f"Error in WebRTC connection: {e}")
+
+            # Run the setup coroutine and then start the event loop
+            loop.run_until_complete(setup())
+            loop.run_forever()
+
+        # Create a new event loop for the asyncio code
+        loop = asyncio.new_event_loop()
+
+        # Start the asyncio event loop in a separate thread
+        asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
+        asyncio_thread.start()
+
+        try:
+
+            while True:
+                if not frame_queue.empty():
+                # if frame_queue:
+                    frame = frame_queue.get()
+                    # frame = frame_queue.pop()
+                    # display_image = frame.to_ndarray(format="rgb24")
+
+                    display_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+                    # aspect_ratio = self.img_width / self.img_height
+                    session.upsert(
+                        [
+                            ImageBackground(
+                                display_image,
+                                aspect=1.778,
+                                height=1,
+                                distanceToCamera=1,
+                                format="jpeg",
+                                quality=50,
+                                key="webrtc",
+                                interpolate=True,
+                            ),
+                        ],
+                        to="bgChildren",
+                    )
+                else:
+                    # Sleep briefly to prevent high CPU usage
+                    await asyncio.sleep(0.016)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                await asyncio.sleep(0.016)
+
+        finally:
+            # cv2.destroyAllWindows()
+            # Stop the asyncio event loop
+            loop.call_soon_threadsafe(loop.stop)
+            asyncio_thread.join()
+
+
     # ==================== common data ====================
     @property
     def head_pose(self):
