@@ -330,10 +330,11 @@ class TeleVuer:
         from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
         from aiortc import MediaStreamTrack
         from collections import deque
+        import av
         
-        # Suppress H.264 decoder warnings during initialization
-        logging.getLogger('aiortc.codecs.h264').setLevel(logging.ERROR)
-        logging.getLogger('libav.h264').setLevel(logging.ERROR)
+        # Suppress FFmpeg/libav H.264 decoder warnings at the C library level
+        # These warnings are expected during WebRTC initialization and are handled gracefully
+        av.logging.set_level(av.logging.FATAL)  # Only show fatal errors, suppress warnings
 
         frame_queue = Queue()
         # frame_queue = deque(maxlen=1) 
