@@ -345,25 +345,13 @@ class TeleVuer:
 
         # Async function to receive video frames and put them in the queue
         async def recv_camera_stream(track: MediaStreamTrack):
-            # Discard the first frame to allow decoder initialization
-            # This prevents H.264 PPS/SPS errors during connection setup
-            try:
-                await track.recv()
-                print("Decoder initialized, starting video stream")
-            except Exception:
-                pass  # Ignore errors on first frame
-            
-            # Main loop
+            # Note: go2_webrtc_driver already handles the first frame in on_track handler
+            # So we don't need to discard it here
             while True:
-                try:
-                    frame = await track.recv()
-                    # Convert the frame to a NumPy array
-                    img = frame.to_ndarray(format="bgr24")
-                    frame_queue.put(img)
-                except Exception as e:
-                    # Log but continue - decoder will recover
-                    logging.debug(f"Frame decode error (will retry): {e}")
-                    continue
+                frame = await track.recv()
+                # Convert the frame to a NumPy array
+                img = frame.to_ndarray(format="bgr24")
+                frame_queue.put(img)
 
         def run_asyncio_loop(loop):
             asyncio.set_event_loop(loop)
