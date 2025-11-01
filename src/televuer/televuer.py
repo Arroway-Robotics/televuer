@@ -345,8 +345,8 @@ class TeleVuer:
                 frame = await track.recv()
                 print("recieved frame")
                 # Convert the frame to a NumPy array
-                img = frame.to_ndarray(format="rgb24")
-                frame_queue.put(frame)
+                img = frame.to_ndarray(format="bgr24")
+                frame_queue.put(img)
                 # frame_queue.append(frame)
 
         def run_asyncio_loop(loop):
@@ -380,10 +380,9 @@ class TeleVuer:
             while True:
                 if not frame_queue.empty():
                 # if frame_queue:
-                    frame = frame_queue.get()
+                    display_image = frame_queue.get()
                     # frame = frame_queue.pop()
-                    # display_image = frame.to_ndarray(format="rgb24")
-
+                    # Convert BGR to RGB for display
                     display_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
                     # aspect_ratio = self.img_width / self.img_height
                     session.upsert(
@@ -405,8 +404,6 @@ class TeleVuer:
                     # Sleep briefly to prevent high CPU usage
                     await asyncio.sleep(0.016)
 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
                 await asyncio.sleep(0.016)
 
         finally:
