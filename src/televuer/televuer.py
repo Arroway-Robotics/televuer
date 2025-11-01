@@ -330,6 +330,10 @@ class TeleVuer:
         from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
         from aiortc import MediaStreamTrack
         from collections import deque
+        
+        # Suppress H.264 decoder warnings during initialization
+        logging.getLogger('aiortc.codecs.h264').setLevel(logging.ERROR)
+        logging.getLogger('libav.h264').setLevel(logging.ERROR)
 
         frame_queue = Queue()
         # frame_queue = deque(maxlen=1) 
@@ -340,14 +344,25 @@ class TeleVuer:
 
         # Async function to receive video frames and put them in the queue
         async def recv_camera_stream(track: MediaStreamTrack):
+            # Discard the first frame to allow decoder initialization
+            # This prevents H.264 PPS/SPS errors during connection setup
+            try:
+                await track.recv()
+                print("Decoder initialized, starting video stream")
+            except Exception:
+                pass  # Ignore errors on first frame
+            
+            # Main loop
             while True:
-                
-                frame = await track.recv()
-                print("recieved frame")
-                # Convert the frame to a NumPy array
-                img = frame.to_ndarray(format="bgr24")
-                frame_queue.put(img)
-                # frame_queue.append(frame)
+                try:
+                    frame = await track.recv()
+                    # Convert the frame to a NumPy array
+                    img = frame.to_ndarray(format="bgr24")
+                    frame_queue.put(img)
+                except Exception as e:
+                    # Log but continue - decoder will recover
+                    logging.debug(f"Frame decode error (will retry): {e}")
+                    continue
 
         def run_asyncio_loop(loop):
             asyncio.set_event_loop(loop)
