@@ -366,15 +366,25 @@ class TeleVuer:
             async def setup():
                 try:
                     # Connect to the device
+                    print("[DEBUG] Connecting to robot...")
                     await conn.connect()
+                    print("[DEBUG] Connected successfully")
 
                     # Switch video channel on and start receiving video frames
+                    print("[DEBUG] Switching video channel ON")
                     conn.video.switchVideoChannel(True)
+                    print(f"[DEBUG] Video channel switched, video object: {conn.video}")
+                    print(f"[DEBUG] Track callbacks list: {conn.video.track_callbacks}")
 
                     # Add callback to handle received video frames
+                    print("[DEBUG] Adding track callback...")
                     conn.video.add_track_callback(recv_camera_stream)
+                    print(f"[DEBUG] Callback added, callbacks list: {conn.video.track_callbacks}")
                 except Exception as e:
                     logging.error(f"Error in WebRTC connection: {e}")
+                    print(f"[DEBUG] Exception in setup: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             # Run the setup coroutine and then start the event loop
             loop.run_until_complete(setup())
