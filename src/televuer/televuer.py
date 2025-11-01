@@ -345,9 +345,11 @@ class TeleVuer:
 
         # Async function to receive video frames and put them in the queue
         async def recv_camera_stream(track: MediaStreamTrack):
+            print(f"[DEBUG] ========== recv_camera_stream CALLED! Track: {track}, kind: {track.kind} ==========")
             # Note: go2_webrtc_driver already handles the first frame in on_track handler
             # So we don't need to discard it here
             frame_count = 0
+            print("[DEBUG] Entering frame receive loop...")
             while True:
                 try:
                     frame = await track.recv()
