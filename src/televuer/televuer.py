@@ -347,11 +347,19 @@ class TeleVuer:
         async def recv_camera_stream(track: MediaStreamTrack):
             # Note: go2_webrtc_driver already handles the first frame in on_track handler
             # So we don't need to discard it here
+            frame_count = 0
             while True:
-                frame = await track.recv()
-                # Convert the frame to a NumPy array
-                img = frame.to_ndarray(format="bgr24")
-                frame_queue.put(img)
+                try:
+                    frame = await track.recv()
+                    # Convert the frame to a NumPy array
+                    img = frame.to_ndarray(format="bgr24")
+                    frame_queue.put(img)
+                    frame_count += 1
+                    if frame_count % 30 == 0:
+                        print(f"[DEBUG] Successfully received and decoded {frame_count} frames, queue size: {frame_queue.qsize()}")
+                except Exception as e:
+                    print(f"[DEBUG] Frame decode error: {e}")
+                    continue
 
         def run_asyncio_loop(loop):
             asyncio.set_event_loop(loop)
@@ -380,7 +388,7 @@ class TeleVuer:
         asyncio_thread.start()
 
         try:
-
+            display_count = 0
             while True:
                 if not frame_queue.empty():
                 # if frame_queue:
@@ -404,6 +412,9 @@ class TeleVuer:
                         ],
                         to="bgChildren",
                     )
+                    display_count += 1
+                    if display_count % 30 == 0:
+                        print(f"[DEBUG] Displayed {display_count} frames, shape: {display_image.shape}")
                 else:
                     # Sleep briefly to prevent high CPU usage
                     await asyncio.sleep(0.016)
