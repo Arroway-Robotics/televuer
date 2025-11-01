@@ -335,6 +335,36 @@ class TeleVuer:
         # Suppress FFmpeg/libav H.264 decoder warnings at the C library level
         # These warnings are expected during WebRTC initialization and are handled gracefully
         av.logging.set_level(av.logging.FATAL)  # Only show fatal errors, suppress warnings
+        
+        # WORKAROUND: Monkey-patch Go2WebRTCConnection to fix on_track handler bug
+        # The original on_track handler calls track.recv() without error handling,
+        # which causes it to fail silently when the first frame can't be decoded.
+        # This prevents track_handler from ever being called.
+        original_init_webrtc = Go2WebRTCConnection.init_webrtc
+        
+        async def patched_init_webrtc(self, turn_server_info=None, ip=None):
+            # Call original init_webrtc but replace the on_track handler
+            await original_init_webrtc(self, turn_server_info, ip)
+            
+            # Replace the on_track handler with our fixed version
+            @self.pc.on("track")
+            async def on_track_fixed(track):
+                print(f"[DEBUG] on_track_fixed called for {track.kind}")
+                
+                if track.kind == "video":
+                    # Skip the problematic first frame receive
+                    # Just call track_handler directly
+                    print("[DEBUG] Calling video track_handler...")
+                    await self.video.track_handler(track)
+                    
+                if track.kind == "audio":
+                    frame = await track.recv()
+                    while True:
+                        frame = await track.recv()
+                        await self.audio.frame_handler(frame)
+        
+        Go2WebRTCConnection.init_webrtc = patched_init_webrtc
+        print("[DEBUG] Monkey-patch applied to Go2WebRTCConnection.init_webrtc")
 
         frame_queue = Queue()
         # frame_queue = deque(maxlen=1) 
