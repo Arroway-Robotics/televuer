@@ -293,7 +293,11 @@ class TeleVuer:
             )
             await asyncio.sleep(0.016)
 
-    async def main_image_webrtc(self, session, fps=60):
+    async def main_image_mjpeg(self, session, fps=60):
+        """
+        Display robot camera feed using MJPEG streaming via FastAPI.
+        This is simpler and more reliable than direct WebRTC decoding.
+        """
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -326,148 +330,147 @@ class TeleVuer:
         import logging
         import threading
         import time
-        from queue import Queue
+        import cv2
+        from fastapi import FastAPI, Response
+        import uvicorn
         from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
         from aiortc import MediaStreamTrack
-        from collections import deque
         import av
+        from vuer.schemas import Html
         
-        # Suppress FFmpeg/libav H.264 decoder warnings at the C library level
-        # These warnings are expected during WebRTC initialization and are handled gracefully
-        av.logging.set_level(av.logging.FATAL)  # Only show fatal errors, suppress warnings
+        # Suppress FFmpeg/libav H.264 decoder warnings
+        av.logging.set_level(av.logging.FATAL)
         
-        # WORKAROUND: Monkey-patch Go2WebRTCConnection to fix on_track handler bug
-        # The original on_track handler calls track.recv() without error handling,
-        # which causes it to fail silently when the first frame can't be decoded.
-        # This prevents track_handler from ever being called.
-        original_init_webrtc = Go2WebRTCConnection.init_webrtc
+        # Shared state for MJPEG streaming
+        last_jpeg = b""
+        last_frame = None
+        frame_lock = threading.Lock()
         
-        async def patched_init_webrtc(self, turn_server_info=None, ip=None):
-            # Call original init_webrtc but replace the on_track handler
-            await original_init_webrtc(self, turn_server_info, ip)
-            
-            # Replace the on_track handler with our fixed version
-            @self.pc.on("track")
-            async def on_track_fixed(track):
-                print(f"[DEBUG] on_track_fixed called for {track.kind}")
-                
-                if track.kind == "video":
-                    # Skip the problematic first frame receive
-                    # Just call track_handler directly
-                    print("[DEBUG] Calling video track_handler...")
-                    await self.video.track_handler(track)
-                    
-                if track.kind == "audio":
-                    frame = await track.recv()
-                    while True:
-                        frame = await track.recv()
-                        await self.audio.frame_handler(frame)
+        # FastAPI app for MJPEG streaming
+        app = FastAPI()
         
-        Go2WebRTCConnection.init_webrtc = patched_init_webrtc
-        print("[DEBUG] Monkey-patch applied to Go2WebRTCConnection.init_webrtc")
+        @app.get("/mjpeg")
+        def mjpeg():
+            def gen():
+                nonlocal last_jpeg
+                boundary = b"--frame"
+                while True:
+                    with frame_lock:
+                        jpg = last_jpeg
+                    if not jpg:
+                        time.sleep(0.005)
+                        continue
+                    yield (boundary + b"\r\n"
+                           b"Content-Type: image/jpeg\r\n"
+                           b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" +
+                           jpg + b"\r\n")
+            return Response(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+        
+        # JPEG encoding thread
+        def jpeg_encoder_loop():
+            nonlocal last_jpeg
+            enc_params = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+            while True:
+                with frame_lock:
+                    frame = last_frame
+                if frame is None:
+                    time.sleep(0.002)
+                    continue
+                ok, buf = cv2.imencode(".jpg", frame, enc_params)
+                if ok:
+                    with frame_lock:
+                        last_jpeg = buf.tobytes() 
 
-        frame_queue = Queue()
-        # frame_queue = deque(maxlen=1) 
-
-        # Choose a connection method (uncomment the correct one)
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.123.161")
-        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="10.1.10.48")
-
-        # Async function to receive video frames and put them in the queue
+        # WebRTC frame receiver
         async def recv_camera_stream(track: MediaStreamTrack):
-            print(f"[DEBUG] ========== recv_camera_stream CALLED! Track: {track}, kind: {track.kind} ==========")
-            # Note: go2_webrtc_driver already handles the first frame in on_track handler
-            # So we don't need to discard it here
+            nonlocal last_frame
+            print("[INFO] Starting video frame reception...")
             frame_count = 0
-            print("[DEBUG] Entering frame receive loop...")
             while True:
                 try:
                     frame = await track.recv()
-                    # Convert the frame to a NumPy array
+                    # Convert to BGR numpy array
                     img = frame.to_ndarray(format="bgr24")
-                    frame_queue.put(img)
+                    with frame_lock:
+                        last_frame = img
                     frame_count += 1
-                    if frame_count % 30 == 0:
-                        print(f"[DEBUG] Successfully received and decoded {frame_count} frames, queue size: {frame_queue.qsize()}")
+                    if frame_count % 100 == 0:
+                        print(f"[INFO] Received {frame_count} frames")
                 except Exception as e:
-                    print(f"[DEBUG] Frame decode error: {e}")
+                    if frame_count < 10:
+                        print(f"[WARN] Frame decode error: {e}")
                     continue
-
-        def run_asyncio_loop(loop):
+        
+        # WebRTC connection setup
+        def run_webrtc_loop(loop):
             asyncio.set_event_loop(loop)
             async def setup():
                 try:
-                    # Connect to the device
-                    print("[DEBUG] Connecting to robot...")
+                    conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.123.161")
+                    print("[INFO] Connecting to robot...")
                     await conn.connect()
-                    print("[DEBUG] Connected successfully")
-
-                    # Switch video channel on and start receiving video frames
-                    print("[DEBUG] Switching video channel ON")
+                    print("[INFO] Connected successfully")
+                    
                     conn.video.switchVideoChannel(True)
-                    print(f"[DEBUG] Video channel switched, video object: {conn.video}")
-                    print(f"[DEBUG] Track callbacks list: {conn.video.track_callbacks}")
-
-                    # Add callback to handle received video frames
-                    print("[DEBUG] Adding track callback...")
+                    print("[INFO] Video channel enabled")
+                    
                     conn.video.add_track_callback(recv_camera_stream)
-                    print(f"[DEBUG] Callback added, callbacks list: {conn.video.track_callbacks}")
+                    print("[INFO] Video callback registered")
                 except Exception as e:
-                    logging.error(f"Error in WebRTC connection: {e}")
-                    print(f"[DEBUG] Exception in setup: {e}")
+                    print(f"[ERROR] WebRTC connection failed: {e}")
                     import traceback
                     traceback.print_exc()
-
-            # Run the setup coroutine and then start the event loop
+            
             loop.run_until_complete(setup())
             loop.run_forever()
-
-        # Create a new event loop for the asyncio code
-        loop = asyncio.new_event_loop()
-
-        # Start the asyncio event loop in a separate thread
-        asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
-        asyncio_thread.start()
-
+        
+        # Start JPEG encoder thread
+        print("[INFO] Starting JPEG encoder thread...")
+        jpeg_thread = threading.Thread(target=jpeg_encoder_loop, daemon=True)
+        jpeg_thread.start()
+        
+        # Start WebRTC thread
+        print("[INFO] Starting WebRTC thread...")
+        webrtc_loop = asyncio.new_event_loop()
+        webrtc_thread = threading.Thread(target=run_webrtc_loop, args=(webrtc_loop,), daemon=True)
+        webrtc_thread.start()
+        
+        # Start FastAPI server in a separate thread
+        print("[INFO] Starting MJPEG server on port 8765...")
+        def run_server():
+            uvicorn.run(app, host="0.0.0.0", port=8765, log_level="warning")
+        
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        
+        # Wait for server to start
+        await asyncio.sleep(2)
+        
+        # Get the host IP
+        import socket
+        hostname = socket.gethostname()
+        host_ip = socket.gethostbyname(hostname)
+        
+        print(f"[INFO] MJPEG stream available at http://{host_ip}:8765/mjpeg")
+        
+        # Insert HTML img tag for MJPEG stream
+        session.upsert(
+            Html(f"""
+              <img src="http://{host_ip}:8765/mjpeg"
+                   style="width:100%; height:100%; object-fit:contain;" />
+            """),
+            key="mjpeg-bg",
+            to="bgChildren",
+        )
+        
+        print("[INFO] MJPEG video display configured")
+        
+        # Keep the async function running
         try:
-            display_count = 0
             while True:
-                if not frame_queue.empty():
-                # if frame_queue:
-                    display_image = frame_queue.get()
-                    # frame = frame_queue.pop()
-                    # Convert BGR to RGB for display
-                    display_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
-                    # aspect_ratio = self.img_width / self.img_height
-                    session.upsert(
-                        [
-                            ImageBackground(
-                                display_image,
-                                aspect=1.778,
-                                height=1,
-                                distanceToCamera=1,
-                                format="jpeg",
-                                quality=50,
-                                key="webrtc",
-                                interpolate=True,
-                            ),
-                        ],
-                        to="bgChildren",
-                    )
-                    display_count += 1
-                    if display_count % 30 == 0:
-                        print(f"[DEBUG] Displayed {display_count} frames, shape: {display_image.shape}")
-                else:
-                    # Sleep briefly to prevent high CPU usage
-                    await asyncio.sleep(0.016)
-
-                await asyncio.sleep(0.016)
-
+                await asyncio.sleep(1)
         finally:
-            # cv2.destroyAllWindows()
-            # Stop the asyncio event loop
-            loop.call_soon_threadsafe(loop.stop)
-            asyncio_thread.join()
+            print("[INFO] Shutting down...")
 
 
     # ==================== common data ====================
