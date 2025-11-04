@@ -116,7 +116,9 @@ class TeleVuer:
 
         self._mjpeg_app = None
         self._mjpeg_server_thread = None
+        self._mjpeg_capture_thread = None  # Independent RealSense capture
         self._mjpeg_encoder_thread = None
+        self._mjpeg_latest_frame = None  # Independent frame buffer
         self._mjpeg_latest_jpeg = None
         self._mjpeg_lock = threading.Lock()
         self._mjpeg_port = 8765  # default; change if you want
@@ -447,15 +449,74 @@ class TeleVuer:
             self._mjpeg_server_thread = threading.Thread(target=server.run, daemon=True)
             self._mjpeg_server_thread.start()
 
-        # 2) Start the encoder thread once (no backlog; always publishes latest JPEG)
+        # 2) Start independent RealSense capture for MJPEG (doesn't use self.img_array)
+        if self._mjpeg_capture_thread is None:
+            import pyrealsense2 as rs
+            
+            def _capture_loop():
+                """Independent RealSense capture for MJPEG (no conflict with self.img_array)"""
+                try:
+                    # Initialize RealSense pipeline
+                    pipeline = rs.pipeline()
+                    config = rs.config()
+                    
+                    # Configure for color stream only (faster than depth+color)
+                    config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8, 30)
+                    
+                    print("[INFO] Starting independent RealSense capture for MJPEG...")
+                    pipeline.start(config)
+                    print("[INFO] RealSense capture started")
+                    
+                    while True:
+                        try:
+                            # Wait for frames (with timeout)
+                            frames = pipeline.wait_for_frames(timeout_ms=1000)
+                            color_frame = frames.get_color_frame()
+                            
+                            if color_frame:
+                                # Convert to numpy array
+                                frame_bgr = np.asanyarray(color_frame.get_data())
+                                
+                                # Store in MJPEG frame buffer (not self.img_array)
+                                with self._mjpeg_lock:
+                                    self._mjpeg_latest_frame = frame_bgr.copy()
+                        
+                        except Exception as e:
+                            print(f"[WARN] RealSense frame capture error: {e}")
+                            time.sleep(0.01)
+                            
+                except Exception as e:
+                    print(f"[ERROR] Failed to initialize RealSense for MJPEG: {e}")
+                    print(f"[INFO] Falling back to self.img_array (may cause conflicts)")
+                    # Fallback: use self.img_array if RealSense init fails
+                    while True:
+                        try:
+                            if self.img_array is not None:
+                                with self._mjpeg_lock:
+                                    self._mjpeg_latest_frame = self.img_array.copy()
+                        except Exception:
+                            pass
+                        time.sleep(0.033)  # ~30fps
+                finally:
+                    try:
+                        pipeline.stop()
+                    except:
+                        pass
+            
+            self._mjpeg_capture_thread = threading.Thread(target=_capture_loop, daemon=True)
+            self._mjpeg_capture_thread.start()
+        
+        # 3) Start the encoder thread once (encodes from _mjpeg_latest_frame)
         if self._mjpeg_encoder_thread is None:
             def _encoder_loop():
                 period = 1.0 / max(1, fps)
                 while True:
                     frame_bgr = None
                     try:
-                        # self.img_array is your shared memory BGR frame
-                        frame_bgr = self.img_array
+                        # Read from independent MJPEG frame buffer (not self.img_array)
+                        with self._mjpeg_lock:
+                            if hasattr(self, '_mjpeg_latest_frame') and self._mjpeg_latest_frame is not None:
+                                frame_bgr = self._mjpeg_latest_frame
                     except Exception:
                         pass
 
@@ -513,12 +574,12 @@ class TeleVuer:
         except Exception as e:
             print(f"  - Server test failed: {e}")
 
-        # Optimized approach: Read directly from self.img_array at low FPS
-        # MJPEG server still runs for external viewing, but we don't extract from it
+        # Display using independent MJPEG frame buffer (not self.img_array)
         from vuer.schemas import ImageBackground
         import numpy as np
         
         print(f"[INFO] Starting optimized video display (low FPS to reduce VR lag)")
+        print(f"[INFO] Using independent RealSense capture (no conflict with self.img_array)")
         print(f"[INFO] MJPEG stream available for external viewing at: {stream_url}")
         
         # Low frame rate to minimize VR lag
@@ -529,10 +590,15 @@ class TeleVuer:
         
         while True:
             try:
-                # Read directly from shared memory (no HTTP overhead)
-                if self.img_array is not None:
+                # Read from independent MJPEG frame buffer (not self.img_array)
+                frame_bgr = None
+                with self._mjpeg_lock:
+                    if hasattr(self, '_mjpeg_latest_frame') and self._mjpeg_latest_frame is not None:
+                        frame_bgr = self._mjpeg_latest_frame.copy()
+                
+                if frame_bgr is not None:
                     # Convert BGR to RGB
-                    display_image = cv2.cvtColor(self.img_array, cv2.COLOR_BGR2RGB)
+                    display_image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                     
                     # Update Vuer ImageBackground
                     session.upsert(
