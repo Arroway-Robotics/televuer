@@ -381,6 +381,17 @@ class TeleVuer:
 
         if self._mjpeg_app is None:
             app = FastAPI()
+            
+            # Add CORS middleware to allow cross-origin requests
+            from fastapi.middleware.cors import CORSMiddleware
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],  # Allow all origins
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+            
             boundary = b"frame"
 
             @app.get("/mjpeg")
@@ -509,7 +520,7 @@ class TeleVuer:
             session.upsert(
                 Html(f'''
                     <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:black;">
-                    <img src="{stream_url}" style="max-width:100%; max-height:100%; object-fit:contain;" crossorigin="anonymous">
+                    <img src="{stream_url}" style="max-width:100%; max-height:100%; object-fit:contain;" alt="Robot Camera Feed">
                     </div>
                 '''),
                 key="mjpeg-bg",
