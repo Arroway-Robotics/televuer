@@ -449,22 +449,56 @@ class TeleVuer:
             self._mjpeg_encoder_thread.start()
 
         # 3) One-time embed in Vuer
+        # Wait a bit for server to start
+        await asyncio.sleep(2)
+        
         scheme = "https" if (self.cert_file and self.key_file) else "http"
         lan_ip = _get_lan_ip()
         stream_url = f"{scheme}://{lan_ip}:{port}/mjpeg"
+        
+        # Debug: Check server and frame status
+        print(f"[DEBUG] MJPEG Configuration:")
+        print(f"  - Scheme: {scheme}")
+        print(f"  - LAN IP: {lan_ip}")
+        print(f"  - Port: {port}")
+        print(f"  - URL: {stream_url}")
+        print(f"  - Has certs: {bool(self.cert_file and self.key_file)}")
+        
+        # Check if we have frames
+        try:
+            frame_shape = self.img_array.shape if self.img_array is not None else None
+            print(f"  - Frame shape: {frame_shape}")
+        except Exception as e:
+            print(f"  - Frame error: {e}")
+        
+        # Check if JPEG is being encoded
+        with self._mjpeg_lock:
+            jpeg_size = len(self._mjpeg_latest_jpeg) if self._mjpeg_latest_jpeg else 0
+        print(f"  - JPEG size: {jpeg_size} bytes")
+        
+        # Test server accessibility
+        try:
+            import requests
+            test_url = f"http://localhost:{port}/frame.jpg"
+            response = requests.get(test_url, timeout=2)
+            print(f"  - Server test: {response.status_code}, {len(response.content)} bytes")
+        except Exception as e:
+            print(f"  - Server test failed: {e}")
 
         try:
             from vuer import Html
             session.upsert(
                 Html(f'''
                     <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:black;">
-                    <img src="{stream_url}" style="max-width:100%; max-height:100%; object-fit:contain;">
+                    <img src="{stream_url}" style="max-width:100%; max-height:100%; object-fit:contain;" crossorigin="anonymous">
                     </div>
                 '''),
                 key="mjpeg-bg",
                 to="bgChildren",
             )
-        except Exception:
+            print(f"[INFO] MJPEG HTML inserted into Vuer")
+        except Exception as e:
+            print(f"[ERROR] Failed to insert HTML: {e}")
             # If your ImageBackground supports a URL, this is even simpler:
             # session.upsert([ImageBackground(src=stream_url, aspect=1.778, height=1, distanceToCamera=1, key="mjpeg-bg")], to="bgChildren")
             print(f"[MJPEG] Stream at {stream_url} (embed via Html or a URL-capable ImageBackground)")
