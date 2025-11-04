@@ -513,117 +513,54 @@ class TeleVuer:
         except Exception as e:
             print(f"  - Server test failed: {e}")
 
-        # Extract frames from MJPEG stream and update ImageBackground
-        # This approach: MJPEG server does encoding, we extract frames and update Vuer
+        # Optimized approach: Read directly from self.img_array at low FPS
+        # MJPEG server still runs for external viewing, but we don't extract from it
         from vuer.schemas import ImageBackground
-        import requests
-        from io import BytesIO
-        from PIL import Image
         import numpy as np
         
-        print(f"[INFO] Starting MJPEG frame extraction from {stream_url}")
+        print(f"[INFO] Starting optimized video display (low FPS to reduce VR lag)")
+        print(f"[INFO] MJPEG stream available for external viewing at: {stream_url}")
         
-        # Target frame rate for Vuer updates (lower = less VR lag)
-        target_fps = 30  # Adjust this to control VR performance
+        # Low frame rate to minimize VR lag
+        target_fps = 15  # Much lower than main_image() to reduce lag
         frame_interval = 1.0 / target_fps
         
         frame_count = 0
-        last_update_time = time.time()
         
-        async def update_loop():
-            nonlocal frame_count, last_update_time
-            
-            # Create a streaming session
-            session_requests = requests.Session()
-            
+        while True:
             try:
-                # Open MJPEG stream
-                response = session_requests.get(stream_url, stream=True, verify=False, timeout=10)
-                
-                if response.status_code != 200:
-                    print(f"[ERROR] Failed to connect to MJPEG stream: {response.status_code}")
-                    return
-                
-                print(f"[INFO] Connected to MJPEG stream, extracting frames...")
-                
-                # Parse MJPEG stream
-                boundary = b"--frame"
-                buffer = b""
-                
-                for chunk in response.iter_content(chunk_size=8192):
-                    if not chunk:
-                        continue
+                # Read directly from shared memory (no HTTP overhead)
+                if self.img_array is not None:
+                    # Convert BGR to RGB
+                    display_image = cv2.cvtColor(self.img_array, cv2.COLOR_BGR2RGB)
                     
-                    buffer += chunk
-                    
-                    # Look for frame boundaries
-                    while boundary in buffer:
-                        # Find the start of the next frame
-                        start = buffer.find(boundary)
-                        if start == -1:
-                            break
-                        
-                        # Find the end of headers (\r\n\r\n)
-                        header_end = buffer.find(b"\r\n\r\n", start)
-                        if header_end == -1:
-                            break
-                        
-                        # Find the next boundary
-                        next_boundary = buffer.find(boundary, header_end)
-                        if next_boundary == -1:
-                            break
-                        
-                        # Extract JPEG data
-                        jpeg_data = buffer[header_end + 4:next_boundary]
-                        buffer = buffer[next_boundary:]
-                        
-                        # Rate limiting
-                        current_time = time.time()
-                        if current_time - last_update_time < frame_interval:
-                            continue
-                        
-                        last_update_time = current_time
-                        
-                        try:
-                            # Decode JPEG to numpy array
-                            img = Image.open(BytesIO(jpeg_data))
-                            img_array = np.array(img)
-                            
-                            # Update Vuer ImageBackground
-                            session.upsert(
-                                [
-                                    ImageBackground(
-                                        img_array,
-                                        aspect=1.778,
-                                        height=1,
-                                        distanceToCamera=1,
-                                        key="mjpeg-bg",
-                                        interpolate=False,
-                                    )
-                                ],
-                                to="bgChildren",
+                    # Update Vuer ImageBackground
+                    session.upsert(
+                        [
+                            ImageBackground(
+                                display_image,
+                                aspect=1.778,
+                                height=1,
+                                distanceToCamera=1,
+                                format="jpeg",
+                                quality=60,  # Lower quality for faster encoding
+                                key="mjpeg-bg",
+                                interpolate=False,
                             )
-                            
-                            frame_count += 1
-                            if frame_count % 30 == 0:
-                                print(f"[INFO] Updated {frame_count} frames to Vuer (target {target_fps} fps)")
-                            
-                            # Yield control to event loop
-                            await asyncio.sleep(0.001)
-                            
-                        except Exception as e:
-                            print(f"[WARN] Frame decode/update error: {e}")
-                            continue
+                        ],
+                        to="bgChildren",
+                    )
+                    
+                    frame_count += 1
+                    if frame_count % 30 == 0:
+                        print(f"[INFO] Updated {frame_count} frames to Vuer ({target_fps} fps)")
+                
+                # Sleep to maintain target FPS
+                await asyncio.sleep(frame_interval)
                 
             except Exception as e:
-                print(f"[ERROR] MJPEG stream error: {e}")
-            finally:
-                session_requests.close()
-        
-        # Run the update loop
-        print(f"[INFO] MJPEG frame extraction started (target {target_fps} fps)")
-        print(f"[INFO] MJPEG stream also available at: {stream_url}")
-        await update_loop()
+                print(f"[WARN] Frame update error: {e}")
+                await asyncio.sleep(0.1)
 
 
 
