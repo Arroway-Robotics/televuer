@@ -485,8 +485,10 @@ class TeleVuer:
         except Exception as e:
             print(f"  - Server test failed: {e}")
 
+        # Try to use Html component, fall back to ImageBackground
+        html_success = False
         try:
-            from vuer import Html
+            from vuer.schemas import Html
             session.upsert(
                 Html(f'''
                     <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:black;">
@@ -497,11 +499,34 @@ class TeleVuer:
                 to="bgChildren",
             )
             print(f"[INFO] MJPEG HTML inserted into Vuer")
+            html_success = True
+        except ImportError as e:
+            print(f"[WARN] Html not available in vuer: {e}")
         except Exception as e:
             print(f"[ERROR] Failed to insert HTML: {e}")
-            # If your ImageBackground supports a URL, this is even simpler:
-            # session.upsert([ImageBackground(src=stream_url, aspect=1.778, height=1, distanceToCamera=1, key="mjpeg-bg")], to="bgChildren")
-            print(f"[MJPEG] Stream at {stream_url} (embed via Html or a URL-capable ImageBackground)")
+        
+        # Fallback: Use ImageBackground with URL (if Html failed)
+        if not html_success:
+            try:
+                from vuer.schemas import ImageBackground
+                print(f"[INFO] Using ImageBackground fallback with URL: {stream_url}")
+                session.upsert(
+                    [
+                        ImageBackground(
+                            src=stream_url,
+                            aspect=1.778,
+                            height=1,
+                            distanceToCamera=1,
+                            key="mjpeg-bg",
+                            interpolate=False,
+                        )
+                    ],
+                    to="bgChildren",
+                )
+                print(f"[INFO] ImageBackground with MJPEG URL inserted")
+            except Exception as e:
+                print(f"[ERROR] ImageBackground fallback also failed: {e}")
+                print(f"[MJPEG] Stream at {stream_url} (manual embed required)")
 
         # 4) Keep task alive
         while True:
