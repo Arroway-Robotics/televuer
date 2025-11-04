@@ -363,7 +363,7 @@ class TeleVuer:
 
         port = None
         jpeg_quality=70
-        force_https=None
+        force_https=False  # Set to True to use HTTPS, False for HTTP (recommended for local network)
 
         if port is None:
             port = self._mjpeg_port
@@ -413,11 +413,21 @@ class TeleVuer:
 
             self._mjpeg_app = app
 
-            # HTTPS if certs are present (or forced)
+            # HTTPS if certs are present AND force_https is not False
             ssl_kwargs = {}
-            use_https = bool(self.cert_file and self.key_file) if force_https is None else bool(force_https)
+            if force_https is None:
+                # Auto-detect: use HTTPS if certs are available
+                use_https = bool(self.cert_file and self.key_file)
+            else:
+                # Explicit override
+                use_https = bool(force_https)
+            
             if use_https:
-                ssl_kwargs = {"ssl_certfile": self.cert_file, "ssl_keyfile": self.key_file}
+                if self.cert_file and self.key_file:
+                    ssl_kwargs = {"ssl_certfile": self.cert_file, "ssl_keyfile": self.key_file}
+                else:
+                    print("[WARN] HTTPS requested but no certificates available, falling back to HTTP")
+                    use_https = False
 
             cfg = uvicorn.Config(self._mjpeg_app, host="0.0.0.0", port=port, log_level="warning", **ssl_kwargs)
             server = uvicorn.Server(cfg)
@@ -452,17 +462,23 @@ class TeleVuer:
         # Wait a bit for server to start
         await asyncio.sleep(2)
         
-        scheme = "https" if (self.cert_file and self.key_file) else "http"
+        # Determine scheme based on force_https setting
+        if force_https is None:
+            scheme = "https" if (self.cert_file and self.key_file) else "http"
+        else:
+            scheme = "https" if force_https else "http"
         lan_ip = _get_lan_ip()
         stream_url = f"{scheme}://{lan_ip}:{port}/mjpeg"
         
         # Debug: Check server and frame status
         print(f"[DEBUG] MJPEG Configuration:")
+        print(f"  - force_https: {force_https}")
         print(f"  - Scheme: {scheme}")
         print(f"  - LAN IP: {lan_ip}")
         print(f"  - Port: {port}")
         print(f"  - URL: {stream_url}")
         print(f"  - Has certs: {bool(self.cert_file and self.key_file)}")
+        print(f"  - Using HTTPS: {scheme == 'https'}")
         
         # Check if we have frames
         try:
@@ -479,8 +495,9 @@ class TeleVuer:
         # Test server accessibility
         try:
             import requests
-            test_url = f"http://localhost:{port}/frame.jpg"
-            response = requests.get(test_url, timeout=2)
+            test_url = f"{scheme}://localhost:{port}/frame.jpg"
+            # Disable SSL verification for self-signed certs
+            response = requests.get(test_url, timeout=2, verify=False)
             print(f"  - Server test: {response.status_code}, {len(response.content)} bytes")
         except Exception as e:
             print(f"  - Server test failed: {e}")
