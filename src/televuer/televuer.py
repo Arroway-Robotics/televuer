@@ -8,6 +8,23 @@ import os
 from pathlib import Path
 
 
+
+import asyncio
+import threading
+import time
+import socket
+import cv2
+from fastapi import FastAPI
+from starlette.responses import StreamingResponse, Response
+import uvicorn
+
+# One-time server state holders (attach to self if inside a class)
+_app = None
+_server_thread = None
+_encoder_thread = None
+_latest_jpeg = None
+_latest_lock = threading.Lock()
+
 class TeleVuer:
     def __init__(self, binocular: bool, use_hand_tracking: bool, img_shape, img_shm_name, cert_file=None, key_file=None, ngrok=False, webrtc=False):
         """
@@ -31,15 +48,17 @@ class TeleVuer:
             self.img_width  = img_shape[1]
         
         current_module_dir = Path(__file__).resolve().parent.parent.parent
+        self.cert_file = cert_file
+        self.key_file = key_file
         if cert_file is None:
-            cert_file = os.path.join(current_module_dir, "cert.pem")
+            self.cert_file = os.path.join(current_module_dir, "cert.pem")
         if key_file is None:
-            key_file = os.path.join(current_module_dir, "key.pem")
+            self.key_file = os.path.join(current_module_dir, "key.pem")
 
         if ngrok:
             self.vuer = Vuer(host='0.0.0.0', queries=dict(grid=False), queue_len=3)
         else:
-            self.vuer = Vuer(host='0.0.0.0', cert=cert_file, key=key_file, queries=dict(grid=False), queue_len=3)
+            self.vuer = Vuer(host='0.0.0.0', cert=self.cert_file, key=self.key_file, queries=dict(grid=False), queue_len=3)
 
         self.vuer.add_handler("CAMERA_MOVE")(self.on_cam_move)
         if self.use_hand_tracking:
@@ -56,7 +75,7 @@ class TeleVuer:
         elif not self.binocular and not self.webrtc:
             self.vuer.spawn(start=False)(self.main_image_monocular)
         elif self.webrtc:
-            self.vuer.spawn(start=False)(self.main_image_webrtc)
+            self.vuer.spawn(start=False)(self.main_image_mjpeg)
 
         self.head_pose_shared = Array('d', 16, lock=True)
         self.left_arm_pose_shared = Array('d', 16, lock=True)
@@ -95,9 +114,18 @@ class TeleVuer:
             self.right_aButton_shared = Value('b', False, lock=True)
             self.right_bButton_shared = Value('b', False, lock=True)
 
+        self._mjpeg_app = None
+        self._mjpeg_server_thread = None
+        self._mjpeg_encoder_thread = None
+        self._mjpeg_latest_jpeg = None
+        self._mjpeg_lock = threading.Lock()
+        self._mjpeg_port = 8765  # default; change if you want
+
         self.process = Process(target=self.vuer_run)
         self.process.daemon = True
         self.process.start()
+
+
 
     def vuer_run(self):
         self.vuer.run()
@@ -318,159 +346,134 @@ class TeleVuer:
                 )
             )
     
+        """
+        Display robot camera feed using MJPEG (FastAPI + Uvicorn).
+        One-time embed in Vuer; browser pulls frames directly.
+        """
+        # 0) Input/UI widgets
+        if self.use_hand_tracking:
+            session.upsert(Hands(stream=True, key="hands", showLeft=False, showRight=False), to="bgChildren")
+        else:
+            session.upsert(MotionControllers(stream=True, key="motionControllers", showLeft=False, showRight=False))
 
+        # 1) Lazy start the MJPEG server
+        import asyncio, time, socket, cv2, uvicorn
+        from fastapi import FastAPI
+        from starlette.responses import StreamingResponse, Response
 
-        # Create an OpenCV window and display a blank image
-        # height, width = 720, 1280  # Adjust the size as needed
-        # img = np.zeros((height, width, 3), dtype=np.uint8)
-        # cv2.imshow('Video', img)
-        # cv2.waitKey(1)  # Ensure the window is created
+        port = None
+        jpeg_quality=70
+        force_https=None
 
-        import asyncio
-        import logging
-        import threading
-        import time
-        import cv2
-        from fastapi import FastAPI, Response
-        import uvicorn
-        from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
-        from aiortc import MediaStreamTrack
-        import av
-        from vuer.schemas import Html
-        
-        # Suppress FFmpeg/libav H.264 decoder warnings
-        av.logging.set_level(av.logging.FATAL)
-        
-        # Shared state for MJPEG streaming
-        last_jpeg = b""
-        last_frame = None
-        frame_lock = threading.Lock()
-        
-        # FastAPI app for MJPEG streaming
-        app = FastAPI()
-        
-        @app.get("/mjpeg")
-        def mjpeg():
-            def gen():
-                nonlocal last_jpeg
-                boundary = b"--frame"
+        if port is None:
+            port = self._mjpeg_port
+
+        def _get_lan_ip() -> str:
+            ip = "127.0.0.1"
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                pass
+            return ip
+
+        if self._mjpeg_app is None:
+            app = FastAPI()
+            boundary = b"frame"
+
+            @app.get("/mjpeg")
+            async def mjpeg():
+                async def gen():
+                    while True:
+                        with self._mjpeg_lock:
+                            blob = self._mjpeg_latest_jpeg
+                        if blob:
+                            yield b"--" + boundary + b"\r\n"
+                            yield b"Content-Type: image/jpeg\r\n"
+                            yield f"Content-Length: {len(blob)}\r\n\r\n".encode()
+                            yield blob + b"\r\n"
+                        await asyncio.sleep(0.001)
+                return StreamingResponse(
+                    gen(),
+                    media_type="multipart/x-mixed-replace; boundary=frame",
+                    headers={
+                        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                        "Pragma": "no-cache",
+                        "Connection": "close",
+                    },
+                )
+
+            @app.get("/frame.jpg")
+            def snapshot():
+                with self._mjpeg_lock:
+                    blob = self._mjpeg_latest_jpeg
+                return Response(blob or b"", media_type="image/jpeg")
+
+            self._mjpeg_app = app
+
+            # HTTPS if certs are present (or forced)
+            ssl_kwargs = {}
+            use_https = bool(self.cert_file and self.key_file) if force_https is None else bool(force_https)
+            if use_https:
+                ssl_kwargs = {"ssl_certfile": self.cert_file, "ssl_keyfile": self.key_file}
+
+            cfg = uvicorn.Config(self._mjpeg_app, host="0.0.0.0", port=port, log_level="warning", **ssl_kwargs)
+            server = uvicorn.Server(cfg)
+
+            # Start Uvicorn in a background thread
+            self._mjpeg_server_thread = threading.Thread(target=server.run, daemon=True)
+            self._mjpeg_server_thread.start()
+
+        # 2) Start the encoder thread once (no backlog; always publishes latest JPEG)
+        if self._mjpeg_encoder_thread is None:
+            def _encoder_loop():
+                period = 1.0 / max(1, fps)
                 while True:
-                    with frame_lock:
-                        jpg = last_jpeg
-                    if not jpg:
-                        time.sleep(0.005)
-                        continue
-                    yield (boundary + b"\r\n"
-                           b"Content-Type: image/jpeg\r\n"
-                           b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" +
-                           jpg + b"\r\n")
-            return Response(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
-        
-        # JPEG encoding thread
-        def jpeg_encoder_loop():
-            nonlocal last_jpeg
-            enc_params = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
-            while True:
-                with frame_lock:
-                    frame = last_frame
-                if frame is None:
-                    time.sleep(0.002)
-                    continue
-                ok, buf = cv2.imencode(".jpg", frame, enc_params)
-                if ok:
-                    with frame_lock:
-                        last_jpeg = buf.tobytes() 
+                    frame_bgr = None
+                    try:
+                        # self.img_array is your shared memory BGR frame
+                        frame_bgr = self.img_array
+                    except Exception:
+                        pass
 
-        # WebRTC frame receiver
-        async def recv_camera_stream(track: MediaStreamTrack):
-            nonlocal last_frame
-            print("[INFO] Starting video frame reception...")
-            frame_count = 0
-            while True:
-                try:
-                    frame = await track.recv()
-                    # Convert to BGR numpy array
-                    img = frame.to_ndarray(format="bgr24")
-                    with frame_lock:
-                        last_frame = img
-                    frame_count += 1
-                    if frame_count % 100 == 0:
-                        print(f"[INFO] Received {frame_count} frames")
-                except Exception as e:
-                    if frame_count < 10:
-                        print(f"[WARN] Frame decode error: {e}")
-                    continue
-        
-        # WebRTC connection setup
-        def run_webrtc_loop(loop):
-            asyncio.set_event_loop(loop)
-            async def setup():
-                try:
-                    conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.123.161")
-                    print("[INFO] Connecting to robot...")
-                    await conn.connect()
-                    print("[INFO] Connected successfully")
-                    
-                    conn.video.switchVideoChannel(True)
-                    print("[INFO] Video channel enabled")
-                    
-                    conn.video.add_track_callback(recv_camera_stream)
-                    print("[INFO] Video callback registered")
-                except Exception as e:
-                    print(f"[ERROR] WebRTC connection failed: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            loop.run_until_complete(setup())
-            loop.run_forever()
-        
-        # Start JPEG encoder thread
-        print("[INFO] Starting JPEG encoder thread...")
-        jpeg_thread = threading.Thread(target=jpeg_encoder_loop, daemon=True)
-        jpeg_thread.start()
-        
-        # Start WebRTC thread
-        print("[INFO] Starting WebRTC thread...")
-        webrtc_loop = asyncio.new_event_loop()
-        webrtc_thread = threading.Thread(target=run_webrtc_loop, args=(webrtc_loop,), daemon=True)
-        webrtc_thread.start()
-        
-        # Start FastAPI server in a separate thread
-        print("[INFO] Starting MJPEG server on port 8765...")
-        def run_server():
-            uvicorn.run(app, host="0.0.0.0", port=8765, log_level="warning")
-        
-        server_thread = threading.Thread(target=run_server, daemon=True)
-        server_thread.start()
-        
-        # Wait for server to start
-        await asyncio.sleep(2)
-        
-        # Get the host IP
-        import socket
-        hostname = socket.gethostname()
-        host_ip = socket.gethostbyname(hostname)
-        
-        print(f"[INFO] MJPEG stream available at http://{host_ip}:8765/mjpeg")
-        
-        # Insert HTML img tag for MJPEG stream
-        session.upsert(
-            Html(f"""
-              <img src="http://{host_ip}:8765/mjpeg"
-                   style="width:100%; height:100%; object-fit:contain;" />
-            """),
-            key="mjpeg-bg",
-            to="bgChildren",
-        )
-        
-        print("[INFO] MJPEG video display configured")
-        
-        # Keep the async function running
+                    if frame_bgr is not None:
+                        ok, jpg = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
+                        if ok:
+                            with self._mjpeg_lock:
+                                self._mjpeg_latest_jpeg = jpg.tobytes()
+                    time.sleep(period)
+
+            self._mjpeg_encoder_thread = threading.Thread(target=_encoder_loop, daemon=True)
+            self._mjpeg_encoder_thread.start()
+
+        # 3) One-time embed in Vuer
+        scheme = "https" if (self.cert_file and self.key_file) else "http"
+        lan_ip = _get_lan_ip()
+        stream_url = f"{scheme}://{lan_ip}:{port}/mjpeg"
+
         try:
-            while True:
-                await asyncio.sleep(1)
-        finally:
-            print("[INFO] Shutting down...")
+            from vuer import Html
+            session.upsert(
+                Html(f'''
+                    <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:black;">
+                    <img src="{stream_url}" style="max-width:100%; max-height:100%; object-fit:contain;">
+                    </div>
+                '''),
+                key="mjpeg-bg",
+                to="bgChildren",
+            )
+        except Exception:
+            # If your ImageBackground supports a URL, this is even simpler:
+            # session.upsert([ImageBackground(src=stream_url, aspect=1.778, height=1, distanceToCamera=1, key="mjpeg-bg")], to="bgChildren")
+            print(f"[MJPEG] Stream at {stream_url} (embed via Html or a URL-capable ImageBackground)")
+
+        # 4) Keep task alive
+        while True:
+            await asyncio.sleep(3600)
+
+
 
 
     # ==================== common data ====================
