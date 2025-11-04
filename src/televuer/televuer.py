@@ -363,7 +363,7 @@ class TeleVuer:
 
         port = None
         jpeg_quality=70
-        force_https=False  # Set to True to use HTTPS, False for HTTP (recommended for local network)
+        force_https=None  # None=auto-detect, True=force HTTPS, False=force HTTP
 
         if port is None:
             port = self._mjpeg_port
