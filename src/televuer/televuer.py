@@ -513,48 +513,48 @@ class TeleVuer:
         except Exception as e:
             print(f"  - Server test failed: {e}")
 
-        # Try to use Html component, fall back to ImageBackground
-        html_success = False
+        # Try ImageBackground with URL first (Html doesn't work in Vuer's 3D context)
+        bg_success = False
         try:
-            from vuer.schemas import Html
+            from vuer.schemas import ImageBackground
+            print(f"[INFO] Using ImageBackground with MJPEG URL: {stream_url}")
             session.upsert(
-                Html(f'''
-                    <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:black;">
-                    <img src="{stream_url}" style="max-width:100%; max-height:100%; object-fit:contain;" alt="Robot Camera Feed">
-                    </div>
-                '''),
-                key="mjpeg-bg",
+                [
+                    ImageBackground(
+                        src=stream_url,
+                        aspect=1.778,
+                        height=1,
+                        distanceToCamera=1,
+                        key="mjpeg-bg",
+                        interpolate=False,
+                    )
+                ],
                 to="bgChildren",
             )
-            print(f"[INFO] MJPEG HTML inserted into Vuer")
-            html_success = True
-        except ImportError as e:
-            print(f"[WARN] Html not available in vuer: {e}")
+            print(f"[INFO] ImageBackground with MJPEG URL inserted")
+            bg_success = True
         except Exception as e:
-            print(f"[ERROR] Failed to insert HTML: {e}")
+            print(f"[WARN] ImageBackground with URL failed: {e}")
         
-        # Fallback: Use ImageBackground with URL (if Html failed)
-        if not html_success:
+        # Fallback: Try Html component (may not work in 3D context)
+        if not bg_success:
             try:
-                from vuer.schemas import ImageBackground
-                print(f"[INFO] Using ImageBackground fallback with URL: {stream_url}")
+                from vuer.schemas import Html
+                print(f"[INFO] Trying Html fallback...")
                 session.upsert(
-                    [
-                        ImageBackground(
-                            src=stream_url,
-                            aspect=1.778,
-                            height=1,
-                            distanceToCamera=1,
-                            key="mjpeg-bg",
-                            interpolate=False,
-                        )
-                    ],
+                    Html(f'''
+                        <div style="position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:9999; pointer-events:none;">
+                        <img src="{stream_url}" style="width:100%; height:100%; object-fit:contain;" alt="Robot Camera Feed">
+                        </div>
+                    '''),
+                    key="mjpeg-bg",
                     to="bgChildren",
                 )
-                print(f"[INFO] ImageBackground with MJPEG URL inserted")
+                print(f"[INFO] MJPEG HTML inserted into Vuer")
             except Exception as e:
-                print(f"[ERROR] ImageBackground fallback also failed: {e}")
-                print(f"[MJPEG] Stream at {stream_url} (manual embed required)")
+                print(f"[ERROR] All display methods failed: {e}")
+                print(f"[INFO] MJPEG stream available at: {stream_url}")
+                print(f"[INFO] You can view it directly in a browser or use a custom video player")
 
         # 4) Keep task alive
         while True:
