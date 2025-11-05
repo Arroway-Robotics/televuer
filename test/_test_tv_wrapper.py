@@ -15,7 +15,7 @@ def run_test_tv_wrapper():
     use_hand_track=False
     tv_wrapper = TeleVuerWrapper(use_hand_tracking=use_hand_track, pass_through=False,
                                  binocular=True, img_shape=(480, 1280),
-                                #  webrtc=True, webrtc_url="https://192.168.123.164:60001/offer"
+                                 webrtc=True, webrtc_url="https://192.168.123.161:8081/offer"
                                 )
     try:
         input("Press Enter to start tv_wrapper test...")
