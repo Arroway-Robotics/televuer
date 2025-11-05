@@ -3,20 +3,24 @@ from vuer.schemas import ImageBackground, Hands, MotionControllers, WebRTCVideoP
 from multiprocessing import Value, Array, Process, shared_memory
 import numpy as np
 import asyncio
-import threading
 import cv2
 import os
 from pathlib import Path
 
 
 class TeleVuer:
+<<<<<<< HEAD
     def __init__(self, use_hand_tracking: bool, pass_through:bool=False, binocular: bool=True, img_shape: tuple=None, 
                        cert_file=None, key_file=None, webrtc: bool=False, webrtc_url: str=None):
+=======
+    def __init__(self, binocular: bool, use_hand_tracking: bool, img_shape, img_shm_name, cert_file=None, key_file=None, ngrok=False, webrtc=False):
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
         """
         TeleVuer class for OpenXR-based XR teleoperate applications.
         This class handles the communication with the Vuer server and manages image and pose data.
 
         :param use_hand_tracking: bool, whether to use hand tracking or controller tracking.
+<<<<<<< HEAD
         :param pass_through: bool, controls the VR viewing mode.
 
             Note:
@@ -31,19 +35,35 @@ class TeleVuer:
         :param key_file: str, path to the SSL key file.
         :param webrtc: bool, whether to use WebRTC for real-time communication. if False, use ImageBackground.
         :param webrtc_url: str, URL for the WebRTC offer.
+=======
+        :param img_shape: tuple, shape of the image (height, width, channels).
+        :param img_shm_name: str, name of the shared memory for the image.
+        :param cert_file: str, path to the SSL certificate file.
+        :param key_file: str, path to the SSL key file.
+        :param ngrok: bool, whether to use ngrok for tunneling.
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
         """
         self.use_hand_tracking = use_hand_tracking
+<<<<<<< HEAD
         self.pass_through = pass_through
 
         self.binocular = binocular
         self.img_shape = (img_shape[0], img_shape[1], 3)
         self.img_height = self.img_shape[0]
+=======
+        self.img_height = img_shape[0]
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
         if self.binocular:
-            self.img_width  = self.img_shape[1] // 2
+            self.img_width  = img_shape[1] // 2
         else:
+<<<<<<< HEAD
             self.img_width  = self.img_shape[1]
         self.aspect_ratio = self.img_width / self.img_height
 
+=======
+            self.img_width  = img_shape[1]
+        
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
         current_module_dir = Path(__file__).resolve().parent.parent.parent
         if cert_file is None:
             cert_file = os.path.join(current_module_dir, "cert.pem")
@@ -57,6 +77,7 @@ class TeleVuer:
         else:
             self.vuer.add_handler("CONTROLLER_MOVE")(self.on_controller_move)
 
+<<<<<<< HEAD
         self.webrtc = webrtc
         self.webrtc_url = webrtc_url
 
@@ -78,6 +99,18 @@ class TeleVuer:
                  self.vuer.spawn(start=False)(self.main_image_binocular)
             else:
                  self.vuer.spawn(start=False)(self.main_image_monocular)
+=======
+        existing_shm = shared_memory.SharedMemory(name=img_shm_name)
+        self.img_array = np.ndarray(img_shape, dtype=np.uint8, buffer=existing_shm.buf)
+
+        self.webrtc = webrtc
+        if self.binocular and not self.webrtc:
+            self.vuer.spawn(start=False)(self.main_image_binocular)
+        elif not self.binocular and not self.webrtc:
+            self.vuer.spawn(start=False)(self.main_image_monocular)
+        elif self.webrtc:
+            self.vuer.spawn(start=False)(self.main_image_webrtc)
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
 
         self.head_pose_shared = Array('d', 16, lock=True)
         self.left_arm_pose_shared = Array('d', 16, lock=True)
@@ -88,37 +121,38 @@ class TeleVuer:
             self.left_hand_orientation_shared = Array('d', 25 * 9, lock=True)
             self.right_hand_orientation_shared = Array('d', 25 * 9, lock=True)
 
-            self.left_hand_pinch_shared = Value('b', False, lock=True)
-            self.left_hand_pinchValue_shared = Value('d', 0.0, lock=True)
-            self.left_hand_squeeze_shared = Value('b', False, lock=True)
-            self.left_hand_squeezeValue_shared = Value('d', 0.0, lock=True)
+            self.left_pinch_state_shared = Value('b', False, lock=True)
+            self.left_pinch_value_shared = Value('d', 0.0, lock=True)
+            self.left_squeeze_state_shared = Value('b', False, lock=True)
+            self.left_squeeze_value_shared = Value('d', 0.0, lock=True)
 
-            self.right_hand_pinch_shared = Value('b', False, lock=True)
-            self.right_hand_pinchValue_shared = Value('d', 0.0, lock=True)
-            self.right_hand_squeeze_shared = Value('b', False, lock=True)
-            self.right_hand_squeezeValue_shared = Value('d', 0.0, lock=True)
+            self.right_pinch_state_shared = Value('b', False, lock=True)
+            self.right_pinch_value_shared = Value('d', 0.0, lock=True)
+            self.right_squeeze_state_shared = Value('b', False, lock=True)
+            self.right_squeeze_value_shared = Value('d', 0.0, lock=True)
         else:
-            self.left_ctrl_trigger_shared = Value('b', False, lock=True)
-            self.left_ctrl_triggerValue_shared = Value('d', 0.0, lock=True)
-            self.left_ctrl_squeeze_shared = Value('b', False, lock=True)
-            self.left_ctrl_squeezeValue_shared = Value('d', 0.0, lock=True)
-            self.left_ctrl_thumbstick_shared = Value('b', False, lock=True)
-            self.left_ctrl_thumbstickValue_shared = Array('d', 2, lock=True)
-            self.left_ctrl_aButton_shared = Value('b', False, lock=True)
-            self.left_ctrl_bButton_shared = Value('b', False, lock=True)
+            self.left_trigger_state_shared = Value('b', False, lock=True)
+            self.left_trigger_value_shared = Value('d', 0.0, lock=True)
+            self.left_squeeze_state_shared = Value('b', False, lock=True)
+            self.left_squeeze_value_shared = Value('d', 0.0, lock=True)
+            self.left_thumbstick_state_shared = Value('b', False, lock=True)
+            self.left_thumbstick_value_shared = Array('d', 2, lock=True)
+            self.left_aButton_shared = Value('b', False, lock=True)
+            self.left_bButton_shared = Value('b', False, lock=True)
 
-            self.right_ctrl_trigger_shared = Value('b', False, lock=True)
-            self.right_ctrl_triggerValue_shared = Value('d', 0.0, lock=True)
-            self.right_ctrl_squeeze_shared = Value('b', False, lock=True)
-            self.right_ctrl_squeezeValue_shared = Value('d', 0.0, lock=True)
-            self.right_ctrl_thumbstick_shared = Value('b', False, lock=True)
-            self.right_ctrl_thumbstickValue_shared = Array('d', 2, lock=True)
-            self.right_ctrl_aButton_shared = Value('b', False, lock=True)
-            self.right_ctrl_bButton_shared = Value('b', False, lock=True)
+            self.right_trigger_state_shared = Value('b', False, lock=True)
+            self.right_trigger_value_shared = Value('d', 0.0, lock=True)
+            self.right_squeeze_state_shared = Value('b', False, lock=True)
+            self.right_squeeze_value_shared = Value('d', 0.0, lock=True)
+            self.right_thumbstick_state_shared = Value('b', False, lock=True)
+            self.right_thumbstick_value_shared = Array('d', 2, lock=True)
+            self.right_aButton_shared = Value('b', False, lock=True)
+            self.right_bButton_shared = Value('b', False, lock=True)
 
-        self.process = Process(target=self._vuer_run)
+        self.process = Process(target=self.vuer_run)
         self.process.daemon = True
         self.process.start()
+<<<<<<< HEAD
     
     def _vuer_run(self):
         try:
@@ -161,6 +195,11 @@ class TeleVuer:
                 self.img2display_shm.unlink()
             except:
                 pass
+=======
+
+    def vuer_run(self):
+        self.vuer.run()
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
 
     async def on_cam_move(self, event, session, fps=60):
         try:
@@ -170,53 +209,49 @@ class TeleVuer:
             pass
 
     async def on_controller_move(self, event, session, fps=60):
-        """https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html"""
         try:
-            # ControllerData
             with self.left_arm_pose_shared.get_lock():
                 self.left_arm_pose_shared[:] = event.value["left"]
             with self.right_arm_pose_shared.get_lock():
                 self.right_arm_pose_shared[:] = event.value["right"]
-            # ControllerState
-            left_controller = event.value["leftState"]
-            right_controller = event.value["rightState"]
 
-            def extract_controllers(controllerState, prefix):
+            left_controller_state = event.value["leftState"]
+            right_controller_state = event.value["rightState"]
+
+            def extract_controller_states(state_dict, prefix):
                 # trigger
-                with getattr(self, f"{prefix}_ctrl_trigger_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_trigger_shared").value = bool(controllerState.get("trigger", False))
-                with getattr(self, f"{prefix}_ctrl_triggerValue_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_triggerValue_shared").value = float(controllerState.get("triggerValue", 0.0))
+                with getattr(self, f"{prefix}_trigger_state_shared").get_lock():
+                    getattr(self, f"{prefix}_trigger_state_shared").value = bool(state_dict.get("trigger", False))
+                with getattr(self, f"{prefix}_trigger_value_shared").get_lock():
+                    getattr(self, f"{prefix}_trigger_value_shared").value = float(state_dict.get("triggerValue", 0.0))
                 # squeeze
-                with getattr(self, f"{prefix}_ctrl_squeeze_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_squeeze_shared").value = bool(controllerState.get("squeeze", False))
-                with getattr(self, f"{prefix}_ctrl_squeezeValue_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_squeezeValue_shared").value = float(controllerState.get("squeezeValue", 0.0))
+                with getattr(self, f"{prefix}_squeeze_state_shared").get_lock():
+                    getattr(self, f"{prefix}_squeeze_state_shared").value = bool(state_dict.get("squeeze", False))
+                with getattr(self, f"{prefix}_squeeze_value_shared").get_lock():
+                    getattr(self, f"{prefix}_squeeze_value_shared").value = float(state_dict.get("squeezeValue", 0.0))
                 # thumbstick
-                with getattr(self, f"{prefix}_ctrl_thumbstick_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_thumbstick_shared").value = bool(controllerState.get("thumbstick", False))
-                with getattr(self, f"{prefix}_ctrl_thumbstickValue_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_thumbstickValue_shared")[:] = controllerState.get("thumbstickValue", [0.0, 0.0])
+                with getattr(self, f"{prefix}_thumbstick_state_shared").get_lock():
+                    getattr(self, f"{prefix}_thumbstick_state_shared").value = bool(state_dict.get("thumbstick", False))
+                with getattr(self, f"{prefix}_thumbstick_value_shared").get_lock():
+                    getattr(self, f"{prefix}_thumbstick_value_shared")[:] = state_dict.get("thumbstickValue", [0.0, 0.0])
                 # buttons
-                with getattr(self, f"{prefix}_ctrl_aButton_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_aButton_shared").value = bool(controllerState.get("aButton", False))
-                with getattr(self, f"{prefix}_ctrl_bButton_shared").get_lock():
-                    getattr(self, f"{prefix}_ctrl_bButton_shared").value = bool(controllerState.get("bButton", False))
+                with getattr(self, f"{prefix}_aButton_shared").get_lock():
+                    getattr(self, f"{prefix}_aButton_shared").value = bool(state_dict.get("aButton", False))
+                with getattr(self, f"{prefix}_bButton_shared").get_lock():
+                    getattr(self, f"{prefix}_bButton_shared").value = bool(state_dict.get("bButton", False))
 
-            extract_controllers(left_controller, "left")
-            extract_controllers(right_controller, "right")
+            extract_controller_states(left_controller_state, "left")
+            extract_controller_states(right_controller_state, "right")
         except:
             pass
 
     async def on_hand_move(self, event, session, fps=60):
-        """https://docs.vuer.ai/en/latest/examples/19_hand_tracking.html"""
         try:
-            # HandsData
             left_hand_data = event.value["left"]
             right_hand_data = event.value["right"]
-            left_hand = event.value["leftState"]
-            right_hand = event.value["rightState"]
-            # HandState
+            left_hand_state = event.value["leftState"]
+            right_hand_state = event.value["rightState"]
+
             def extract_hand_poses(hand_data, arm_pose_shared, hand_position_shared, hand_orientation_shared):
                 with arm_pose_shared.get_lock():
                     arm_pose_shared[:] = hand_data[0:16]
@@ -235,22 +270,22 @@ class TeleVuer:
                             hand_data[base + 8], hand_data[base + 9], hand_data[base + 10],
                         ]
 
-            def extract_hands(handState, prefix):
+            def extract_hand_states(state_dict, prefix):
                 # pinch
-                with getattr(self, f"{prefix}_hand_pinch_shared").get_lock():
-                    getattr(self, f"{prefix}_hand_pinch_shared").value = bool(handState.get("pinch", False))
-                with getattr(self, f"{prefix}_hand_pinchValue_shared").get_lock():
-                    getattr(self, f"{prefix}_hand_pinchValue_shared").value = float(handState.get("pinchValue", 0.0))
+                with getattr(self, f"{prefix}_pinch_state_shared").get_lock():
+                    getattr(self, f"{prefix}_pinch_state_shared").value = bool(state_dict.get("pinch", False))
+                with getattr(self, f"{prefix}_pinch_value_shared").get_lock():
+                    getattr(self, f"{prefix}_pinch_value_shared").value = float(state_dict.get("pinchValue", 0.0))
                 # squeeze
-                with getattr(self, f"{prefix}_hand_squeeze_shared").get_lock():
-                    getattr(self, f"{prefix}_hand_squeeze_shared").value = bool(handState.get("squeeze", False))
-                with getattr(self, f"{prefix}_hand_squeezeValue_shared").get_lock():
-                    getattr(self, f"{prefix}_hand_squeezeValue_shared").value = float(handState.get("squeezeValue", 0.0))
+                with getattr(self, f"{prefix}_squeeze_state_shared").get_lock():
+                    getattr(self, f"{prefix}_squeeze_state_shared").value = bool(state_dict.get("squeeze", False))
+                with getattr(self, f"{prefix}_squeeze_value_shared").get_lock():
+                    getattr(self, f"{prefix}_squeeze_value_shared").value = float(state_dict.get("squeezeValue", 0.0))
 
             extract_hand_poses(left_hand_data, self.left_arm_pose_shared, self.left_hand_position_shared, self.left_hand_orientation_shared)
             extract_hand_poses(right_hand_data, self.right_arm_pose_shared, self.right_hand_position_shared, self.right_hand_orientation_shared)
-            extract_hands(left_hand, "left")
-            extract_hands(right_hand, "right")
+            extract_hand_states(left_hand_state, "left")
+            extract_hand_states(right_hand_state, "right")
 
         except:
             pass
@@ -276,7 +311,11 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
+
+        # session.set @ Scene()
+
         while True:
+<<<<<<< HEAD
             if self.pass_through is False:
                 session.upsert(
                     [
@@ -308,8 +347,42 @@ class TeleVuer:
                     ],
                     to="bgChildren",
                 )
+=======
+            display_image = cv2.cvtColor(self.img_array, cv2.COLOR_BGR2RGB)
+            # aspect_ratio = self.img_width / self.img_height
+            session.upsert(
+                [
+                    ImageBackground(
+                        display_image[:, :self.img_width],
+                        aspect=1.778,
+                        height=1,
+                        distanceToCamera=1,
+                        # The underlying rendering engine supported a layer binary bitmask for both objects and the camera. 
+                        # Below we set the two image planes, left and right, to layers=1 and layers=2. 
+                        # Note that these two masks are associated with left eye’s camera and the right eye’s camera.
+                        layers=1,
+                        format="jpeg",
+                        quality=100,
+                        key="background-left",
+                        interpolate=True,
+                    ),
+                    ImageBackground(
+                        display_image[:, self.img_width:],
+                        aspect=1.778,
+                        height=1,
+                        distanceToCamera=1,
+                        layers=2,
+                        format="jpeg",
+                        quality=100,
+                        key="background-right",
+                        interpolate=True,
+                    ),
+                ],
+                to="bgChildren",
+            )
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
             # 'jpeg' encoding should give you about 30fps with a 16ms wait in-between.
-            await asyncio.sleep(0.016)
+            await asyncio.sleep(0.016 * 2)
 
     async def main_image_monocular(self, session):
         if self.use_hand_tracking:
@@ -334,6 +407,7 @@ class TeleVuer:
             )
 
         while True:
+<<<<<<< HEAD
             if self.pass_through is False:
                 session.upsert(
                     [
@@ -353,6 +427,28 @@ class TeleVuer:
             await asyncio.sleep(0.016)
 
     async def main_image_binocular_webrtc(self, session):
+=======
+            display_image = cv2.cvtColor(self.img_array, cv2.COLOR_BGR2RGB)
+            # aspect_ratio = self.img_width / self.img_height
+            session.upsert(
+                [
+                    ImageBackground(
+                        display_image,
+                        aspect=1.778,
+                        height=1,
+                        distanceToCamera=1,
+                        format="jpeg",
+                        quality=50,
+                        key="background-mono",
+                        interpolate=True,
+                    ),
+                ],
+                to="bgChildren",
+            )
+            await asyncio.sleep(0.016)
+
+    async def main_image_webrtc(self, session, fps=60):
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -368,6 +464,7 @@ class TeleVuer:
                 MotionControllers(
                     stream=True, 
                     key="motionControllers",
+<<<<<<< HEAD
                     left=True,
                     right=True,
                 ),
@@ -428,6 +525,121 @@ class TeleVuer:
                 )
 
             await asyncio.sleep(0.016)
+=======
+                    showLeft=False,
+                    showRight=False,
+                )
+            )
+    
+
+
+        # Create an OpenCV window and display a blank image
+        # height, width = 720, 1280  # Adjust the size as needed
+        # img = np.zeros((height, width, 3), dtype=np.uint8)
+        # cv2.imshow('Video', img)
+        # cv2.waitKey(1)  # Ensure the window is created
+
+        import asyncio
+        import logging
+        import threading
+        import time
+        from queue import Queue
+        from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
+        from aiortc import MediaStreamTrack
+        from collections import deque
+
+        frame_queue = Queue()
+        # frame_queue = deque(maxlen=1) 
+
+        # Choose a connection method (uncomment the correct one)
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.123.161")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="10.1.10.48")
+
+        # Async function to receive video frames and put them in the queue
+        async def recv_camera_stream(track: MediaStreamTrack):
+            while True:
+                print("trying to get frame")
+                frame = await track.recv()
+                print("recieved frame")
+                # Convert the frame to a NumPy array
+                img = frame.to_ndarray(format="rgb24")
+                frame_queue.put(frame)
+                # frame_queue.append(frame)
+
+        def run_asyncio_loop(loop):
+            print("start run_asyncio_loop")
+            asyncio.set_event_loop(loop)
+            print("setting run_asyncio_loop")
+            async def setup():
+                try:
+                    print("start setup")
+                    # Connect to the device
+                    await conn.connect()
+                    print("done connecting")
+
+                    # Switch video channel on and start receiving video frames
+                    conn.video.switchVideoChannel(True)
+                    print("successfully setting video channel")
+
+                    # Add callback to handle received video frames
+                    conn.video.add_track_callback(recv_camera_stream)
+                except Exception as e:
+                    logging.error(f"Error in WebRTC connection: {e}")
+
+            # Run the setup coroutine and then start the event loop
+            loop.run_until_complete(setup())
+            print("coroutine done")
+            loop.run_forever()
+
+        # Create a new event loop for the asyncio code
+        loop = asyncio.new_event_loop()
+
+        # Start the asyncio event loop in a separate thread
+        asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
+        asyncio_thread.start()
+
+        try:
+
+            while True:
+                if not frame_queue.empty():
+                # if frame_queue:
+                    frame = frame_queue.get()
+                    # frame = frame_queue.pop()
+                    # display_image = frame.to_ndarray(format="rgb24")
+
+                    display_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+                    # aspect_ratio = self.img_width / self.img_height
+                    session.upsert(
+                        [
+                            ImageBackground(
+                                display_image,
+                                aspect=1.778,
+                                height=1,
+                                distanceToCamera=1,
+                                format="jpeg",
+                                quality=50,
+                                key="webrtc",
+                                interpolate=True,
+                            ),
+                        ],
+                        to="bgChildren",
+                    )
+                else:
+                    # Sleep briefly to prevent high CPU usage
+                    await asyncio.sleep(0.016)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                await asyncio.sleep(0.016)
+
+        finally:
+            # cv2.destroyAllWindows()
+            # Stop the asyncio event loop
+            loop.call_soon_threadsafe(loop.stop)
+            asyncio_thread.join()
+
+
+>>>>>>> de8286aa4b1a3ec37002484a5957b0cb3baf8ab1
     # ==================== common data ====================
     @property
     def head_pose(self):
@@ -473,146 +685,146 @@ class TeleVuer:
             return np.array(self.right_hand_orientation_shared[:]).reshape(25, 9).reshape(25, 3, 3, order="F")
 
     @property
-    def left_hand_pinch(self):
+    def left_hand_pinch_state(self):
         """bool, whether left hand is pinching."""
-        with self.left_hand_pinch_shared.get_lock():
-            return self.left_hand_pinch_shared.value
+        with self.left_pinch_state_shared.get_lock():
+            return self.left_pinch_state_shared.value
 
     @property
-    def left_hand_pinchValue(self):
+    def left_hand_pinch_value(self):
         """float, pinch strength of left hand."""
-        with self.left_hand_pinchValue_shared.get_lock():
-            return self.left_hand_pinchValue_shared.value
+        with self.left_pinch_value_shared.get_lock():
+            return self.left_pinch_value_shared.value
 
     @property
-    def left_hand_squeeze(self):
+    def left_hand_squeeze_state(self):
         """bool, whether left hand is squeezing."""
-        with self.left_hand_squeeze_shared.get_lock():
-            return self.left_hand_squeeze_shared.value
+        with self.left_squeeze_state_shared.get_lock():
+            return self.left_squeeze_state_shared.value
 
     @property
-    def left_hand_squeezeValue(self):
+    def left_hand_squeeze_value(self):
         """float, squeeze strength of left hand."""
-        with self.left_hand_squeezeValue_shared.get_lock():
-            return self.left_hand_squeezeValue_shared.value
+        with self.left_squeeze_value_shared.get_lock():
+            return self.left_squeeze_value_shared.value
 
     @property
-    def right_hand_pinch(self):
+    def right_hand_pinch_state(self):
         """bool, whether right hand is pinching."""
-        with self.right_hand_pinch_shared.get_lock():
-            return self.right_hand_pinch_shared.value
+        with self.right_pinch_state_shared.get_lock():
+            return self.right_pinch_state_shared.value
 
     @property
-    def right_hand_pinchValue(self):
+    def right_hand_pinch_value(self):
         """float, pinch strength of right hand."""
-        with self.right_hand_pinchValue_shared.get_lock():
-            return self.right_hand_pinchValue_shared.value
+        with self.right_pinch_value_shared.get_lock():
+            return self.right_pinch_value_shared.value
 
     @property
-    def right_hand_squeeze(self):
+    def right_hand_squeeze_state(self):
         """bool, whether right hand is squeezing."""
-        with self.right_hand_squeeze_shared.get_lock():
-            return self.right_hand_squeeze_shared.value
+        with self.right_squeeze_state_shared.get_lock():
+            return self.right_squeeze_state_shared.value
 
     @property
-    def right_hand_squeezeValue(self):
+    def right_hand_squeeze_value(self):
         """float, squeeze strength of right hand."""
-        with self.right_hand_squeezeValue_shared.get_lock():
-            return self.right_hand_squeezeValue_shared.value
+        with self.right_squeeze_value_shared.get_lock():
+            return self.right_squeeze_value_shared.value
 
     # ==================== Controller Data ====================
     @property
-    def left_ctrl_trigger(self):
+    def left_controller_trigger_state(self):
         """bool, left controller trigger pressed or not."""
-        with self.left_ctrl_trigger_shared.get_lock():
-            return self.left_ctrl_trigger_shared.value
+        with self.left_trigger_state_shared.get_lock():
+            return self.left_trigger_state_shared.value
 
     @property
-    def left_ctrl_triggerValue(self):
+    def left_controller_trigger_value(self):
         """float, left controller trigger analog value (0.0 ~ 1.0)."""
-        with self.left_ctrl_triggerValue_shared.get_lock():
-            return self.left_ctrl_triggerValue_shared.value
+        with self.left_trigger_value_shared.get_lock():
+            return self.left_trigger_value_shared.value
 
     @property
-    def left_ctrl_squeeze(self):
+    def left_controller_squeeze_state(self):
         """bool, left controller squeeze pressed or not."""
-        with self.left_ctrl_squeeze_shared.get_lock():
-            return self.left_ctrl_squeeze_shared.value
+        with self.left_squeeze_state_shared.get_lock():
+            return self.left_squeeze_state_shared.value
 
     @property
-    def left_ctrl_squeezeValue(self):
+    def left_controller_squeeze_value(self):
         """float, left controller squeeze analog value (0.0 ~ 1.0)."""
-        with self.left_ctrl_squeezeValue_shared.get_lock():
-            return self.left_ctrl_squeezeValue_shared.value
+        with self.left_squeeze_value_shared.get_lock():
+            return self.left_squeeze_value_shared.value
 
     @property
-    def left_ctrl_thumbstick(self):
+    def left_controller_thumbstick_state(self):
         """bool, whether left thumbstick is touched or clicked."""
-        with self.left_ctrl_thumbstick_shared.get_lock():
-            return self.left_ctrl_thumbstick_shared.value
+        with self.left_thumbstick_state_shared.get_lock():
+            return self.left_thumbstick_state_shared.value
 
     @property
-    def left_ctrl_thumbstickValue(self):
+    def left_controller_thumbstick_value(self):
         """np.ndarray, shape (2,), left thumbstick 2D axis values (x, y)."""
-        with self.left_ctrl_thumbstickValue_shared.get_lock():
-            return np.array(self.left_ctrl_thumbstickValue_shared[:])
+        with self.left_thumbstick_value_shared.get_lock():
+            return np.array(self.left_thumbstick_value_shared[:])
 
     @property
-    def left_ctrl_aButton(self):
+    def left_controller_aButton(self):
         """bool, left controller 'A' button pressed."""
-        with self.left_ctrl_aButton_shared.get_lock():
-            return self.left_ctrl_aButton_shared.value
+        with self.left_aButton_shared.get_lock():
+            return self.left_aButton_shared.value
 
     @property
-    def left_ctrl_bButton(self):
+    def left_controller_bButton(self):
         """bool, left controller 'B' button pressed."""
-        with self.left_ctrl_bButton_shared.get_lock():
-            return self.left_ctrl_bButton_shared.value
+        with self.left_bButton_shared.get_lock():
+            return self.left_bButton_shared.value
 
     @property
-    def right_ctrl_trigger(self):
+    def right_controller_trigger_state(self):
         """bool, right controller trigger pressed or not."""
-        with self.right_ctrl_trigger_shared.get_lock():
-            return self.right_ctrl_trigger_shared.value
+        with self.right_trigger_state_shared.get_lock():
+            return self.right_trigger_state_shared.value
 
     @property
-    def right_ctrl_triggerValue(self):
+    def right_controller_trigger_value(self):
         """float, right controller trigger analog value (0.0 ~ 1.0)."""
-        with self.right_ctrl_triggerValue_shared.get_lock():
-            return self.right_ctrl_triggerValue_shared.value
+        with self.right_trigger_value_shared.get_lock():
+            return self.right_trigger_value_shared.value
 
     @property
-    def right_ctrl_squeeze(self):
+    def right_controller_squeeze_state(self):
         """bool, right controller squeeze pressed or not."""
-        with self.right_ctrl_squeeze_shared.get_lock():
-            return self.right_ctrl_squeeze_shared.value
+        with self.right_squeeze_state_shared.get_lock():
+            return self.right_squeeze_state_shared.value
 
     @property
-    def right_ctrl_squeezeValue(self):
+    def right_controller_squeeze_value(self):
         """float, right controller squeeze analog value (0.0 ~ 1.0)."""
-        with self.right_ctrl_squeezeValue_shared.get_lock():
-            return self.right_ctrl_squeezeValue_shared.value
+        with self.right_squeeze_value_shared.get_lock():
+            return self.right_squeeze_value_shared.value
 
     @property
-    def right_ctrl_thumbstick(self):
+    def right_controller_thumbstick_state(self):
         """bool, whether right thumbstick is touched or clicked."""
-        with self.right_ctrl_thumbstick_shared.get_lock():
-            return self.right_ctrl_thumbstick_shared.value
+        with self.right_thumbstick_state_shared.get_lock():
+            return self.right_thumbstick_state_shared.value
 
     @property
-    def right_ctrl_thumbstickValue(self):
+    def right_controller_thumbstick_value(self):
         """np.ndarray, shape (2,), right thumbstick 2D axis values (x, y)."""
-        with self.right_ctrl_thumbstickValue_shared.get_lock():
-            return np.array(self.right_ctrl_thumbstickValue_shared[:])
+        with self.right_thumbstick_value_shared.get_lock():
+            return np.array(self.right_thumbstick_value_shared[:])
 
     @property
-    def right_ctrl_aButton(self):
+    def right_controller_aButton(self):
         """bool, right controller 'A' button pressed."""
-        with self.right_ctrl_aButton_shared.get_lock():
-            return self.right_ctrl_aButton_shared.value
+        with self.right_aButton_shared.get_lock():
+            return self.right_aButton_shared.value
 
     @property
-    def right_ctrl_bButton(self):
+    def right_controller_bButton(self):
         """bool, right controller 'B' button pressed."""
-        with self.right_ctrl_bButton_shared.get_lock():
-            return self.right_ctrl_bButton_shared.value
+        with self.right_bButton_shared.get_lock():
+            return self.right_bButton_shared.value
