@@ -8,23 +8,6 @@ import os
 from pathlib import Path
 
 
-
-import asyncio
-import threading
-import time
-import socket
-import cv2
-from fastapi import FastAPI
-from starlette.responses import StreamingResponse, Response
-import uvicorn
-
-# One-time server state holders (attach to self if inside a class)
-_app = None
-_server_thread = None
-_encoder_thread = None
-_latest_jpeg = None
-_latest_lock = threading.Lock()
-
 class TeleVuer:
     def __init__(self, binocular: bool, use_hand_tracking: bool, img_shape, img_shm_name, cert_file=None, key_file=None, ngrok=False, webrtc=False):
         """
@@ -48,17 +31,15 @@ class TeleVuer:
             self.img_width  = img_shape[1]
         
         current_module_dir = Path(__file__).resolve().parent.parent.parent
-        self.cert_file = cert_file
-        self.key_file = key_file
         if cert_file is None:
-            self.cert_file = os.path.join(current_module_dir, "cert.pem")
+            cert_file = os.path.join(current_module_dir, "cert.pem")
         if key_file is None:
-            self.key_file = os.path.join(current_module_dir, "key.pem")
+            key_file = os.path.join(current_module_dir, "key.pem")
 
         if ngrok:
             self.vuer = Vuer(host='0.0.0.0', queries=dict(grid=False), queue_len=3)
         else:
-            self.vuer = Vuer(host='0.0.0.0', cert=self.cert_file, key=self.key_file, queries=dict(grid=False), queue_len=3)
+            self.vuer = Vuer(host='0.0.0.0', cert=cert_file, key=key_file, queries=dict(grid=False), queue_len=3)
 
         self.vuer.add_handler("CAMERA_MOVE")(self.on_cam_move)
         if self.use_hand_tracking:
@@ -75,7 +56,7 @@ class TeleVuer:
         elif not self.binocular and not self.webrtc:
             self.vuer.spawn(start=False)(self.main_image_monocular)
         elif self.webrtc:
-            self.vuer.spawn(start=False)(self.main_image_mjpeg)
+            self.vuer.spawn(start=False)(self.main_image_webrtc)
 
         self.head_pose_shared = Array('d', 16, lock=True)
         self.left_arm_pose_shared = Array('d', 16, lock=True)
@@ -114,20 +95,9 @@ class TeleVuer:
             self.right_aButton_shared = Value('b', False, lock=True)
             self.right_bButton_shared = Value('b', False, lock=True)
 
-        self._mjpeg_app = None
-        self._mjpeg_server_thread = None
-        self._mjpeg_capture_thread = None  # Independent RealSense capture
-        self._mjpeg_encoder_thread = None
-        self._mjpeg_latest_frame = None  # Independent frame buffer
-        self._mjpeg_latest_jpeg = None
-        self._mjpeg_lock = threading.Lock()
-        self._mjpeg_port = 8765  # default; change if you want
-
         self.process = Process(target=self.vuer_run)
         self.process.daemon = True
         self.process.start()
-
-
 
     def vuer_run(self):
         self.vuer.run()
@@ -323,11 +293,7 @@ class TeleVuer:
             )
             await asyncio.sleep(0.016)
 
-    async def main_image_mjpeg(self, session, fps=60):
-        """
-        Display robot camera feed using MJPEG streaming via FastAPI.
-        This is simpler and more reliable than direct WebRTC decoding.
-        """
+    async def main_image_webrtc(self, session, fps=60):
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -348,259 +314,84 @@ class TeleVuer:
                 )
             )
     
-        """
-        Display robot camera feed using MJPEG (FastAPI + Uvicorn).
-        One-time embed in Vuer; browser pulls frames directly.
-        """
-        # 0) Input/UI widgets
-        if self.use_hand_tracking:
-            session.upsert(Hands(stream=True, key="hands", showLeft=False, showRight=False), to="bgChildren")
-        else:
-            session.upsert(MotionControllers(stream=True, key="motionControllers", showLeft=False, showRight=False))
 
-        # 1) Lazy start the MJPEG server
-        import asyncio, time, socket, cv2, uvicorn
-        from fastapi import FastAPI
-        from starlette.responses import StreamingResponse, Response
 
-        port = None
-        jpeg_quality=70
-        force_https=None  # None=auto-detect, True=force HTTPS, False=force HTTP
+        # Create an OpenCV window and display a blank image
+        # height, width = 720, 1280  # Adjust the size as needed
+        # img = np.zeros((height, width, 3), dtype=np.uint8)
+        # cv2.imshow('Video', img)
+        # cv2.waitKey(1)  # Ensure the window is created
 
-        if port is None:
-            port = self._mjpeg_port
+        import asyncio
+        import logging
+        import threading
+        import time
+        from queue import Queue
+        from go2_webrtc_driver.webrtc_driver import Go2WebRTCConnection, WebRTCConnectionMethod
+        from aiortc import MediaStreamTrack
+        from collections import deque
 
-        def _get_lan_ip() -> str:
-            ip = "127.0.0.1"
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                ip = s.getsockname()[0]
-                s.close()
-            except Exception:
-                pass
-            return ip
+        frame_queue = Queue()
+        # frame_queue = deque(maxlen=1) 
 
-        if self._mjpeg_app is None:
-            app = FastAPI()
-            
-            # Add CORS middleware to allow cross-origin requests
-            from fastapi.middleware.cors import CORSMiddleware
-            app.add_middleware(
-                CORSMiddleware,
-                allow_origins=["*"],  # Allow all origins
-                allow_credentials=True,
-                allow_methods=["*"],
-                allow_headers=["*"],
-            )
-            
-            boundary = b"frame"
+        # Choose a connection method (uncomment the correct one)
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.123.161")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="10.1.10.48")
 
-            @app.get("/mjpeg")
-            async def mjpeg():
-                async def gen():
-                    while True:
-                        with self._mjpeg_lock:
-                            blob = self._mjpeg_latest_jpeg
-                        if blob:
-                            yield b"--" + boundary + b"\r\n"
-                            yield b"Content-Type: image/jpeg\r\n"
-                            yield f"Content-Length: {len(blob)}\r\n\r\n".encode()
-                            yield blob + b"\r\n"
-                        await asyncio.sleep(0.001)
-                return StreamingResponse(
-                    gen(),
-                    media_type="multipart/x-mixed-replace; boundary=frame",
-                    headers={
-                        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                        "Pragma": "no-cache",
-                        "Connection": "close",
-                    },
-                )
+        # Async function to receive video frames and put them in the queue
+        async def recv_camera_stream(track: MediaStreamTrack):
+            while True:
+                print("trying to get frame")
+                frame = await track.recv()
+                print("recieved frame")
+                # Convert the frame to a NumPy array
+                img = frame.to_ndarray(format="rgb24")
+                frame_queue.put(frame)
+                # frame_queue.append(frame)
 
-            @app.get("/frame.jpg")
-            def snapshot():
-                with self._mjpeg_lock:
-                    blob = self._mjpeg_latest_jpeg
-                return Response(blob or b"", media_type="image/jpeg")
-
-            self._mjpeg_app = app
-
-            # HTTPS if certs are present AND force_https is not False
-            ssl_kwargs = {}
-            if force_https is None:
-                # Auto-detect: use HTTPS if certs are available
-                use_https = bool(self.cert_file and self.key_file)
-            else:
-                # Explicit override
-                use_https = bool(force_https)
-            
-            if use_https:
-                if self.cert_file and self.key_file:
-                    ssl_kwargs = {"ssl_certfile": self.cert_file, "ssl_keyfile": self.key_file}
-                else:
-                    print("[WARN] HTTPS requested but no certificates available, falling back to HTTP")
-                    use_https = False
-
-            cfg = uvicorn.Config(self._mjpeg_app, host="0.0.0.0", port=port, log_level="warning", **ssl_kwargs)
-            server = uvicorn.Server(cfg)
-
-            # Start Uvicorn in a background thread
-            self._mjpeg_server_thread = threading.Thread(target=server.run, daemon=True)
-            self._mjpeg_server_thread.start()
-
-        # 2) Start independent RealSense capture for MJPEG (doesn't use self.img_array)
-        if self._mjpeg_capture_thread is None:
-            import pyrealsense2 as rs
-            
-            def _capture_loop():
-                """Independent RealSense capture for MJPEG (no conflict with self.img_array)"""
+        def run_asyncio_loop(loop):
+            print("start run_asyncio_loop")
+            asyncio.set_event_loop(loop)
+            print("setting run_asyncio_loop")
+            async def setup():
                 try:
-                    # Initialize RealSense pipeline
-                    pipeline = rs.pipeline()
-                    config = rs.config()
-                    
-                    # Configure for color stream only (faster than depth+color)
-                    config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8, 30)
-                    
-                    print("[INFO] Starting independent RealSense capture for MJPEG...")
-                    pipeline.start(config)
-                    print("[INFO] RealSense capture started")
-                    
-                    while True:
-                        try:
-                            # Wait for frames (with timeout)
-                            frames = pipeline.wait_for_frames(timeout_ms=1000)
-                            color_frame = frames.get_color_frame()
-                            
-                            if color_frame:
-                                # Convert to numpy array
-                                frame_bgr = np.asanyarray(color_frame.get_data())
-                                
-                                # Store in MJPEG frame buffer (not self.img_array)
-                                with self._mjpeg_lock:
-                                    self._mjpeg_latest_frame = frame_bgr.copy()
-                        
-                        except Exception as e:
-                            print(f"[WARN] RealSense frame capture error: {e}")
-                            time.sleep(0.01)
-                            
+                    print("start setup")
+                    # Connect to the device
+                    await conn.connect()
+                    print("done connecting")
+
+                    # Switch video channel on and start receiving video frames
+                    conn.video.switchVideoChannel(True)
+                    print("successfully setting video channel")
+
+                    # Add callback to handle received video frames
+                    conn.video.add_track_callback(recv_camera_stream)
                 except Exception as e:
-                    print(f"[ERROR] Failed to initialize RealSense for MJPEG: {e}")
-                    print(f"[INFO] Falling back to self.img_array (may cause conflicts)")
-                    # Fallback: use self.img_array if RealSense init fails
-                    while True:
-                        try:
-                            if self.img_array is not None:
-                                with self._mjpeg_lock:
-                                    self._mjpeg_latest_frame = self.img_array.copy()
-                        except Exception:
-                            pass
-                        time.sleep(0.033)  # ~30fps
-                finally:
-                    try:
-                        pipeline.stop()
-                    except:
-                        pass
-            
-            self._mjpeg_capture_thread = threading.Thread(target=_capture_loop, daemon=True)
-            self._mjpeg_capture_thread.start()
-        
-        # 3) Start the encoder thread once (encodes from _mjpeg_latest_frame)
-        if self._mjpeg_encoder_thread is None:
-            def _encoder_loop():
-                period = 1.0 / max(1, fps)
-                while True:
-                    frame_bgr = None
-                    try:
-                        # Read from independent MJPEG frame buffer (not self.img_array)
-                        with self._mjpeg_lock:
-                            if hasattr(self, '_mjpeg_latest_frame') and self._mjpeg_latest_frame is not None:
-                                frame_bgr = self._mjpeg_latest_frame
-                    except Exception:
-                        pass
+                    logging.error(f"Error in WebRTC connection: {e}")
 
-                    if frame_bgr is not None:
-                        ok, jpg = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
-                        if ok:
-                            with self._mjpeg_lock:
-                                self._mjpeg_latest_jpeg = jpg.tobytes()
-                    time.sleep(period)
+            # Run the setup coroutine and then start the event loop
+            loop.run_until_complete(setup())
+            print("coroutine done")
+            loop.run_forever()
 
-            self._mjpeg_encoder_thread = threading.Thread(target=_encoder_loop, daemon=True)
-            self._mjpeg_encoder_thread.start()
+        # Create a new event loop for the asyncio code
+        loop = asyncio.new_event_loop()
 
-        # 3) One-time embed in Vuer
-        # Wait a bit for server to start
-        await asyncio.sleep(2)
-        
-        # Determine scheme based on force_https setting
-        if force_https is None:
-            scheme = "https" if (self.cert_file and self.key_file) else "http"
-        else:
-            scheme = "https" if force_https else "http"
-        lan_ip = _get_lan_ip()
-        stream_url = f"{scheme}://{lan_ip}:{port}/mjpeg"
-        
-        # Debug: Check server and frame status
-        print(f"[DEBUG] MJPEG Configuration:")
-        print(f"  - force_https: {force_https}")
-        print(f"  - Scheme: {scheme}")
-        print(f"  - LAN IP: {lan_ip}")
-        print(f"  - Port: {port}")
-        print(f"  - URL: {stream_url}")
-        print(f"  - Has certs: {bool(self.cert_file and self.key_file)}")
-        print(f"  - Using HTTPS: {scheme == 'https'}")
-        
-        # Check if we have frames
+        # Start the asyncio event loop in a separate thread
+        asyncio_thread = threading.Thread(target=run_asyncio_loop, args=(loop,))
+        asyncio_thread.start()
+
         try:
-            frame_shape = self.img_array.shape if self.img_array is not None else None
-            print(f"  - Frame shape: {frame_shape}")
-        except Exception as e:
-            print(f"  - Frame error: {e}")
-        
-        # Check if JPEG is being encoded
-        with self._mjpeg_lock:
-            jpeg_size = len(self._mjpeg_latest_jpeg) if self._mjpeg_latest_jpeg else 0
-        print(f"  - JPEG size: {jpeg_size} bytes")
-        
-        # Test server accessibility
-        try:
-            import requests
-            test_url = f"{scheme}://localhost:{port}/frame.jpg"
-            # Disable SSL verification for self-signed certs
-            response = requests.get(test_url, timeout=2, verify=False)
-            print(f"  - Server test: {response.status_code}, {len(response.content)} bytes")
-        except Exception as e:
-            print(f"  - Server test failed: {e}")
 
-        # Display using independent MJPEG frame buffer (not self.img_array)
-        from vuer.schemas import ImageBackground
-        import numpy as np
-        
-        print(f"[INFO] Starting optimized video display (low FPS to reduce VR lag)")
-        print(f"[INFO] Using independent RealSense capture (no conflict with self.img_array)")
-        print(f"[INFO] MJPEG stream available for external viewing at: {stream_url}")
-        
-        # Low frame rate to minimize VR lag
-        target_fps = 15  # Much lower than main_image() to reduce lag
-        frame_interval = 1.0 / target_fps
-        
-        frame_count = 0
-        
-        while True:
-            try:
-                # Read from independent MJPEG frame buffer (not self.img_array)
-                frame_bgr = None
-                with self._mjpeg_lock:
-                    if hasattr(self, '_mjpeg_latest_frame') and self._mjpeg_latest_frame is not None:
-                        frame_bgr = self._mjpeg_latest_frame.copy()
-                
-                if frame_bgr is not None:
-                    # Convert BGR to RGB
-                    display_image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    
-                    # Update Vuer ImageBackground
+            while True:
+                if not frame_queue.empty():
+                # if frame_queue:
+                    frame = frame_queue.get()
+                    # frame = frame_queue.pop()
+                    # display_image = frame.to_ndarray(format="rgb24")
+
+                    display_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+                    # aspect_ratio = self.img_width / self.img_height
                     session.upsert(
                         [
                             ImageBackground(
@@ -609,26 +400,26 @@ class TeleVuer:
                                 height=1,
                                 distanceToCamera=1,
                                 format="jpeg",
-                                quality=60,  # Lower quality for faster encoding
-                                key="mjpeg-bg",
-                                interpolate=False,
-                            )
+                                quality=50,
+                                key="webrtc",
+                                interpolate=True,
+                            ),
                         ],
                         to="bgChildren",
                     )
-                    
-                    frame_count += 1
-                    if frame_count % 30 == 0:
-                        print(f"[INFO] Updated {frame_count} frames to Vuer ({target_fps} fps)")
-                
-                # Sleep to maintain target FPS
-                await asyncio.sleep(frame_interval)
-                
-            except Exception as e:
-                print(f"[WARN] Frame update error: {e}")
-                await asyncio.sleep(0.1)
+                else:
+                    # Sleep briefly to prevent high CPU usage
+                    await asyncio.sleep(0.016)
 
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                await asyncio.sleep(0.016)
 
+        finally:
+            # cv2.destroyAllWindows()
+            # Stop the asyncio event loop
+            loop.call_soon_threadsafe(loop.stop)
+            asyncio_thread.join()
 
 
     # ==================== common data ====================
