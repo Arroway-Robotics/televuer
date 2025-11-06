@@ -12,9 +12,21 @@ When using TeleVuer with WebRTC, you may encounter a "mixed content" error if:
 
 Browsers block this combination for security reasons.
 
-## Solution: HTTPS Reverse Proxy
+## Solutions
 
-The recommended solution is to set up an HTTPS reverse proxy on the robot that forwards requests to the local HTTP WebRTC server.
+There are two approaches to solve this problem:
+
+### Solution 1: Same-Origin (Recommended)
+
+Serve both Vuer and the WebRTC endpoint from the same origin, then proxy the WebRTC requests internally. This completely eliminates CORS issues.
+
+**Example:** If Vuer runs on `https://10.1.10.187:8012`, configure it to also serve `/offer` which proxies to the robot's WebRTC server.
+
+See [SAME_ORIGIN_SOLUTION.md](SAME_ORIGIN_SOLUTION.md) for complete implementation guide.
+
+### Solution 2: HTTPS Reverse Proxy on Robot
+
+Set up an HTTPS reverse proxy on the robot that forwards requests to the local HTTP WebRTC server. Requires CORS headers.
 
 ### Architecture
 
