@@ -174,6 +174,33 @@ while True:
     tv_wrapper.render_to_xr(image)
 ```
 
+## Common Issues
+
+### CORS Errors
+
+**Symptom**: Browser console shows:
+```
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource.
+(Reason: CORS header 'Access-Control-Allow-Origin' missing).
+```
+
+**Solution**: Your reverse proxy needs CORS headers. See [CORS_FIX.md](CORS_FIX.md) for detailed instructions.
+
+**Quick fix for Caddy** - Add to your Caddyfile:
+```caddy
+header {
+    Access-Control-Allow-Origin *
+    Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+}
+```
+
+**Quick fix for Nginx** - Add to your location block:
+```nginx
+add_header 'Access-Control-Allow-Origin' '*' always;
+add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+```
+
 ## Troubleshooting
 
 ### "Mixed Content" Error
