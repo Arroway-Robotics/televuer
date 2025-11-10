@@ -380,7 +380,11 @@ class TeleVuer:
                     WebRTCStereoVideoPlane(
                         src=self.webrtc_url,
                         iceServer=None,
-                        iceServers=[], 
+                        iceServers=[
+                            {"urls": "stun:stun.l.google.com:19302"},
+                            {"urls": "stun:stun1.l.google.com:19302"},
+                            {"urls": "stun:stun2.l.google.com:19302"},
+                        ], 
                         key="video-quad",
                         aspect=self.aspect_ratio,
                         height = 7,
@@ -419,7 +423,11 @@ class TeleVuer:
                     WebRTCVideoPlane(
                         src=self.webrtc_url,
                         iceServer=None,
-                        iceServers=[],
+                        iceServers=[
+                            {"urls": "stun:stun.l.google.com:19302"},
+                            {"urls": "stun:stun1.l.google.com:19302"},
+                            {"urls": "stun:stun2.l.google.com:19302"},
+                        ],
                         key="video-quad",
                         aspect=self.aspect_ratio,
                         height = 7,
