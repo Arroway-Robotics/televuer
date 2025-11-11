@@ -50,7 +50,7 @@ class TeleVuer:
         if key_file is None:
             key_file = os.path.join(current_module_dir, "key.pem")
 
-        self.vuer = Vuer(host='0.0.0.0', cert=cert_file, key=key_file, queries=dict(grid=False), queue_len=3)
+        self.vuer = Vuer(host='0.0.0.0', port=8081, cert=cert_file, key=key_file, queries=dict(grid=False), queue_len=3)
         self.vuer.add_handler("CAMERA_MOVE")(self.on_cam_move)
         if self.use_hand_tracking:
             self.vuer.add_handler("HAND_MOVE")(self.on_hand_move)
